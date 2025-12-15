@@ -7,6 +7,7 @@ from scipy.stats import median_abs_deviation
 
 plt.rcParams.update({'font.size': 24})  # Set global font size
 
+# SCALE controls length scale. Increase to get smooths the curve
 SCALE = 1
 # SCALE = 2
 FILTER = 'R'
@@ -59,7 +60,7 @@ def gp_peak_pipeline(
     jd_left, jd_right : float
         Interval to consider (inclusive).
     fwhm_guess : float
-        Approximate FWHM in JD (used to set length scale). Default 0.02.
+        Approximate FWHM in JD (used to set length scale). Default 0.02. Controls sharpness of the peak
     jd_max_guess : float or None
         Optional initial guess for the peak JD; used for plotting and selecting grid window.
     normalize : bool
