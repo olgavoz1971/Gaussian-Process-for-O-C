@@ -1,4 +1,4 @@
-# Cataclysmic Variable Peak Analysis (Draft)
+# Cataclysmic Variable Peak Analysis using GP (Draft)
 
 **Status:** Draft — work in progress  
 
