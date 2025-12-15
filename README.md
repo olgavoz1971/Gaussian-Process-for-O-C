@@ -17,6 +17,6 @@ Since GP fitting requires observational error estimates, and such errors are not
 ## References
 
 Gaussian Process regression has been previously applied to light curves fitting, i.g:  
-  - [Castro, N et al. 2018, AJ, 155, 16 "Uncertain Classification of Variable Stars: Handling Observational GAPS and Noise"] 
-  - [Trevisan, P. et al. 2023, ApJ, 950, 103 "Sparse Logistic Regression for RR Lyrae versus Binaries Classification"]
+  - Castro, N et al. 2018, AJ, 155, 16 "Uncertain Classification of Variable Stars: Handling Observational GAPS and Noise"
+  - Trevisan, P. et al. 2023, ApJ, 950, 103 "Sparse Logistic Regression for RR Lyrae versus Binaries Classification"
 
