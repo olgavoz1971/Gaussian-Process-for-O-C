@@ -5,6 +5,8 @@ import json
 from dash import dcc, html, Input, Output, State, ALL, DiskcacheManager
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
+from dash import callback_context
+
 
 import traceback
 import logging
@@ -98,11 +100,13 @@ def upload_lc(contents, filename):
 
 # Callback for Intervals Upload
 @app.callback(
+    # region fold me
     Output('store-intervals-data', 'data'),
     Output('upload-intervals-text', 'children'),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
     prevent_initial_call=True
+    # endregion
     # Output('store-intervals-data', 'data'),
     # Input('intervals', 'contents'),
     # prevent_initial_call=True
@@ -156,6 +160,29 @@ def upload_intervals(contents, filename):
     # return intervals_list
 
 
+from dash import callback_context
+
+
+@app.callback(
+    Output({'type': 'float-input', 'index': ALL}, 'value'),
+    Output('guess-sigma', 'value'),
+    Input('reset-btn', 'n_clicks'),
+    State({'type': 'float-input', 'index': ALL}, 'id'),
+    prevent_initial_call=True
+)
+def reset_params(n_clicks, ids):
+    if n_clicks is None:
+        return dash.no_update, dash.no_update
+
+    # 1. Reset floats from the dictionary
+    float_resets = [str(params_float[val_id['index']]) for val_id in ids]
+    # Create a list of return values based on the 'index' stored in the ID
+    # This pulls directly from your global 'params_float' dictionary
+    # 2. Reset the boolean to your default constant
+    return float_resets, GUESS_SIGMA
+    # return [str(params_float[val_id['index']]) for val_id in ids]
+
+
 def create_float_input(label, default_val, tooltip_text, index, step=1.0):
     """Helper to create labeled float inputs with tooltips."""
     return html.Div([
@@ -166,7 +193,7 @@ def create_float_input(label, default_val, tooltip_text, index, step=1.0):
     ], className="mb-2")
 
 
-def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict):
+def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict, step=0.001):
     """
     Creates a grouped set of 3 inputs (Min, Init, Max) with a common header.
     - prefix: the base string for the dictionary keys (e.g., 'white_noise_level')
@@ -186,14 +213,14 @@ def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict):
             # MIN
             dbc.Col([
                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_min"},
-                          type="number", value=defaults[f"{prefix}_min"], size="sm"),
+                          type="number", value=defaults[f"{prefix}_min"], step=step, size="sm"),
                 html.Small("Min", className="text-muted d-block text-center")
             ], width=4, className="pe-1"),
 
             # INIT
             dbc.Col([
                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_init"},
-                          type="number", value=defaults[f"{prefix}_init"], size="sm",
+                          type="number", value=defaults[f"{prefix}_init"], step=step, size="sm",
                           style={"border-color": "#007bff"}),  # Highlight initial guess
                 html.Small("Init", className="text-muted d-block text-center")
             ], width=4, className="px-1"),
@@ -201,7 +228,7 @@ def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict):
             # MAX
             dbc.Col([
                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_max"},
-                          type="number", value=defaults[f"{prefix}_max"], size="sm"),
+                          type="number", value=defaults[f"{prefix}_max"], step=step, size="sm"),
                 html.Small("Max", className="text-muted d-block text-center")
             ], width=4, className="ps-1"),
         ], className="g-0")  # No gutters for maximum compactness
@@ -255,7 +282,7 @@ sidebar = html.Div([
     # html.H4("Control"),  # , className="display-6"),
     # html.Hr(),
     html.H6("Legend"),
-    LegendItem("blue", "Data Points", mode='circle'),
+    LegendItem("black", "Data Points", mode='circle'),
     LegendItem("rgb(31, 119, 180)", "GP Mean", mode='line'),
     LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ Confidence", mode='line'),
     LegendItem("magenta", "Peak Estimate & 1σ Range", mode='dashed'),
@@ -281,6 +308,7 @@ sidebar = html.Div([
                style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
 
     html.Hr(),
+    dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="mt-3"),
 
     # Unpaired parameter:
     create_float_input(
@@ -294,7 +322,8 @@ sidebar = html.Div([
         main_label="White Kernel Bounds",
         main_tooltip="Bounds and initial guess for the WhiteNoise kernel level.",
         prefix="white_noise_level",
-        defaults=params_float
+        defaults=params_float,
+        step=0.001
     ),
     # 3. Length Scale Triple (Assuming you add 'length_scale_min/max' to your dict)
     create_parameter_triple(
@@ -364,7 +393,7 @@ sidebar = html.Div([
 
 # Output Panel (Graphs in a Grid)
 content = html.Div([
-    html.H4("Peaks"),
+    html.H4("Peaks: normalised flux vs. JD"),
     html.Hr(),
     # Grid for graphs - 2 per row
     dbc.Row(id='graphs-container')
@@ -383,7 +412,7 @@ app.layout = dbc.Container([
 ], fluid=True)
 
 # --- Callbacks (Logic) ---
-DEBUG = True
+DEBUG = False
 
 
 def create_gp_plot(gp_res, jd_max_guess=None):
@@ -414,9 +443,10 @@ def create_gp_plot(gp_res, jd_max_guess=None):
         error_y=dict(type='data', array=np.full_like(y, noise_sigma_norm),
                      visible=True, thickness=1, width=2,
                      color='gray'),
-        # Customizing the tooltip text
+        # Map the error to customdata so the template can see it
+        customdata=np.full_like(y, noise_sigma_norm),
         # hovertemplate="<b>JD:</b> %{x:.3f}<br><b>norm flux:</b> %{y:.3f}<extra></extra>",
-        hovertemplate="Data: %{y:.3f}<extra></extra>",
+        hovertemplate="Data: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
         name='Data'
         # endregion
     ))
@@ -426,7 +456,9 @@ def create_gp_plot(gp_res, jd_max_guess=None):
         x=x_grid, y=y_mean,
         mode='lines',
         line=dict(color='rgb(31, 119, 180)', width=2),
-        hovertemplate="GP Mean: %{y:.3f}[norm flux]<extra></extra>",
+        # Pass the grid of standard deviations to customdata
+        customdata=y_std,
+        hovertemplate="GP Mean: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
         name='GP mean',
         # showlegend=False,
     ))
@@ -505,7 +537,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
             # This controls the BIG bold number at the top of the unified tooltip
             # '.3f' ensures 4 decimal places for the Julian Date
             hoverformat='.3f',
-            title='jd',
+            # title='jd',
             tickfont=dict(size=10)
         ),
         hovermode='x unified',  # Show one tooltip for all traces.
@@ -529,7 +561,8 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     State('store-lc-data', 'data'),
     State('store-intervals-data', 'data'),
     State('guess-sigma', 'value'),
-    State({'type': 'float-input', 'index': ALL}, 'value'),
+    State({'type': 'float-input', 'index': ALL}, 'id'),   # Get the IDs
+    State({'type': 'float-input', 'index': ALL}, 'value'),   # Get the values
     background=True,
     cancel=[Input("cancel-btn", "n_clicks")],
     running=[
@@ -540,18 +573,10 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     prevent_initial_call=True
     # endregion
 )
-def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, float_values):
-    # TODO: be careful there with parameters order. Dangerous pitfall :-(
-    p = {
-        "noise_scale_divisor": float_values[0],
-        "length_scale_init": float_values[1],
-        "length_scale_min": float_values[2],
-        "length_scale_max": float_values[3],
-        "white_noise_level_init": float_values[4],
-        "white_noise_level_min": float_values[5],
-        "white_noise_level_max": float_values[6],
-        "guess_sigma": guess_sigma,
-    }
+def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, float_values):
+    p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
+    # Add a standalone guess_sigma
+    p['guess_sigma'] = guess_sigma
 
     # 1. Validation: Ensure files are loaded
     if DEBUG:
@@ -591,20 +616,53 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, float
 
             fig = create_gp_plot(gp_res, jd_max_guess=jd_max_guess)
 
+            # Extract optimized values (formatted for brevity)
+            optimized_kernel = gp_res['gp'].kernel_
+            optimized_params = optimized_kernel.get_params()
+            opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
+            opt_w = optimized_params.get('k2__noise_level', 0.0)
+
+            l_color = "danger" if (opt_l <= p['length_scale_min'] * 1.01 or
+                                   opt_l >= p['length_scale_max'] * 0.99) else "info"
+            w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or
+                                   opt_w >= p['white_noise_level_max'] * 0.99) else "info"
+
             new_graph = dbc.Col(
-                dcc.Graph(
-                    figure=fig,
-                    # ONLY leave 'Reset Axes' and 'Box Select'
-                    config={  # type: ignore
-                        'displaylogo': False,
-                        'modeBarButtonsToRemove': ['pan2d', 'lasso2d', ' autoScale2d',
-                                                   'select2d', 'zoomIn2d', 'zoomOut2d'],
-                        # 'displayModeBar': True,
-                    },
-                ),
+                html.Div([
+                    # Metadata Badge Row
+                    html.Div([
+                        dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
+                        dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
+                        dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
+                    ], style={"textAlign": "center", "marginBottom": "2px"}),
+
+                    dcc.Graph(
+                        figure=fig,
+                        config={    # type: ignore
+                            'displaylogo': False,
+                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d',
+                                                       'select2d', 'zoomIn2d', 'zoomOut2d']
+                            # 'displayModeBar': True,
+                        },
+                    ),
+                ], style={"border": "1px solid #eee", "padding": "5px", "borderRadius": "5px"}),
                 width=6,
-                className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
+                className="px-1 mb-2"   # "px-1" reduces horizontal padding between columns
             )
+            # new_graph = dbc.Col(
+            #     dcc.Graph(
+            #         figure=fig,
+            #         # ONLY leave 'Reset Axes' and 'Box Select'
+            #         config={  # type: ignore
+            #             'displaylogo': False,
+            #             'modeBarButtonsToRemove': ['pan2d', 'lasso2d', ' autoScale2d',
+            #                                        'select2d', 'zoomIn2d', 'zoomOut2d'],
+            #             # 'displayModeBar': True,
+            #         },
+            #     ),
+            #     width=6,
+            #     className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
+            # )
             figs.append(new_graph)
 
             # "Spit out" the current list of figures to the UI
