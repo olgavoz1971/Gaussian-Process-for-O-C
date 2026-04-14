@@ -4,8 +4,12 @@ import pandas as pd
 import json
 from dash import dcc, html, Input, Output, State, ALL, DiskcacheManager
 import dash_bootstrap_components as dbc
-# import plotly.express as px
 import plotly.graph_objects as go
+
+import traceback
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 import base64
 import io
@@ -13,14 +17,14 @@ import numpy as np
 
 from gp import (GUESS_SIGMA, LEN_MIN,
                 read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
-                NOISE_SCALE_DIVISOR, LENGTH_SCALE_INIT, SAMPLING_SCALE_FACTOR,
+                NOISE_SCALE_DIVISOR,
+                LENGTH_SCALE_INIT, LENGTH_SCALE_MIN, LENGTH_SCALE_MAX,
                 WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX)
-
 params_float = {
     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
     "length_scale_init": LENGTH_SCALE_INIT,
-    "sampling_scale_factor": SAMPLING_SCALE_FACTOR,
-    "length_scale_factor": SAMPLING_SCALE_FACTOR,
+    "length_scale_min": LENGTH_SCALE_MIN,
+    "length_scale_max": LENGTH_SCALE_MAX,
     "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
     "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
     "white_noise_level_max": WHITE_NOISE_LEVEL_MAX
@@ -30,7 +34,10 @@ cache = diskcache.Cache("./cache")
 background_callback_manager = DiskcacheManager(cache)
 
 app = dash.Dash(__name__,
-                external_stylesheets=[dbc.themes.FLATLY],
+                external_stylesheets=[
+                    dbc.themes.FLATLY,
+                    dbc.icons.BOOTSTRAP
+                ],
                 background_callback_manager=background_callback_manager
                 )
 
@@ -38,57 +45,167 @@ app = dash.Dash(__name__,
 # Callback for Lightcurve Upload
 @app.callback(
     Output('store-lc-data', 'data'),
+    Output('upload-lc-text', 'children'),  # Targets the text inside the box
     Input('upload-lc', 'contents'),
+    State('upload-lc', 'filename'),  # Grabs the filename
     prevent_initial_call=True
 )
-def upload_lc(contents):
+def upload_lc(contents, filename):
     if contents is None:
-        return dash.no_update
-
+        return dash.no_update, dash.no_update
     # Decode the upload
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
+    try:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        df = read_lc(io.BytesIO(decoded))
+        df = add_flux(df)
 
-    # Use io.BytesIO to make the decoded bytes act like a file
-    # Then pass it to your backend function
-    df = read_lc(io.BytesIO(decoded))
-    df = add_flux(df)
+        # Serialise to JSON for dcc.Store
+        lc = df.to_dict(orient='split', index=False)
+        lc_data = json.dumps(lc)
+        # --- UI Success Feedback ---
+        new_label = html.Div([
+            html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
+            html.Span(f"{filename}", style={"fontSize": "0.9rem", "fontWeight": "bold"})
+        ])
 
-    # Serialise to JSON for dcc.Store
-    lc = df.to_dict(orient='split', index=False)
-    return json.dumps(lc)
-    # return df.to_json(date_format='iso', orient='split')
+        return lc_data, new_label
+
+    except Exception as e:
+        # 1. Detailed Console Logging
+        logging.error(f"Failed to process file: {filename}")
+        logging.error(traceback.format_exc())  # Prints the full stack trace to terminal
+        # 2. User-Friendly but Verbose GUI Feedback
+        # error_msg = str(e)[:50] + "..." if len(str(e)) > 50 else str(e)
+
+        return dash.no_update, html.Div([
+            html.I(className="bi bi-exclamation-triangle-fill me-2", style={"color": "#dc3545"}),
+            # Terse text with the Tooltip target
+            html.Span(
+                [html.B("Error: "), filename],
+                id=f"err-target-{filename.replace('.', '-')}",  # Clean ID (no dots)
+                style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
+            ),
+            # The full error message only appears on hover
+            dbc.Tooltip(
+                f"Traceback: {str(e)}",
+                target=f"err-target-{filename.replace('.', '-')}",
+                placement="right",
+                style={"fontSize": "0.75rem"}
+            ),
+        ])
 
 
 # Callback for Intervals Upload
 @app.callback(
     Output('store-intervals-data', 'data'),
-    Input('intervals', 'contents'),
+    Output('upload-intervals-text', 'children'),
+    Input('upload-intervals', 'contents'),
+    State('upload-intervals', 'filename'),
     prevent_initial_call=True
+    # Output('store-intervals-data', 'data'),
+    # Input('intervals', 'contents'),
+    # prevent_initial_call=True
 )
-def upload_intervals(contents):
+def upload_intervals(contents, filename):
     if contents is None:
-        return dash.no_update
+        return dash.no_update, dash.no_update
+    try:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        # Convert bytes -> text -> StringIO
+        text = decoded.decode('utf-8', errors='ignore')  # "ignore"  to prevent the whole app
+        # from crashing over a single non-ASCII character.
+        intervals_list = load_intervals(io.StringIO(text))
 
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
+        # --- Success UI ---
+        return intervals_list, html.Div([
+            html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
+            html.B(filename)
+        ])
+    except Exception as e:
+        # 1. Log full traceback for terminal
+        logging.error(f"Error processing interval file {filename}:")
+        logging.error(traceback.format_exc())
 
-    # convert bytes -> text -> StringIO
-    text = decoded.decode('utf-8')
-    intervals_list = load_intervals(io.StringIO(text))
-    # print(f'{intervals_list=}')
-    # Serialise the list of tuples
-    return intervals_list
+        # 2. Terse UI for sidebar with hover details
+        # We replace dots/spaces with hyphens for a valid HTML ID
+        safe_id = f"err-int-{filename.replace('.', '-').replace(' ', '-')}"
+
+        return dash.no_update, html.Div([
+            html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
+            html.Span(
+                [html.B("Error: "), filename],
+                id=safe_id,
+                style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
+            ),
+            dbc.Tooltip(
+                f"Interval Load Error: {str(e)}",
+                target=safe_id,
+                placement="right",
+                style={"fontSize": "0.75rem"}
+            )
+        ])
+
+    # content_type, content_string = contents.split(',')
+    # decoded = base64.b64decode(content_string)
+    #
+    # # convert bytes -> text -> StringIO
+    # text = decoded.decode('utf-8')
+    # intervals_list = load_intervals(io.StringIO(text))
+    # return intervals_list
 
 
-def create_float_input(label, default_val, tooltip_text, index):
+def create_float_input(label, default_val, tooltip_text, index, step=1.0):
     """Helper to create labeled float inputs with tooltips."""
     return html.Div([
         dbc.Label(label, id=f"label-{index}"),
         dbc.Tooltip(tooltip_text, target=f"label-{index}"),
         dbc.Input(id={'type': 'float-input', 'index': index},
-                  type="number", value=default_val),
+                  type="number", value=default_val, step=step),
     ], className="mb-2")
+
+
+def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict):
+    """
+    Creates a grouped set of 3 inputs (Min, Init, Max) with a common header.
+    - prefix: the base string for the dictionary keys (e.g., 'white_noise_level')
+    - defaults: the params_float dictionary
+    """
+    print(f'Creating parameter-triple {prefix}')
+    print(f'{defaults=}')
+    return html.Div([
+        # Main Category Label with Tooltip
+        html.Div([
+            html.B(main_label, id=f"triple-label-{prefix}", style={"cursor": "help"}),
+            dbc.Tooltip(main_tooltip, target=f"triple-label-{prefix}"),
+        ], className="mt-3 mb-1"),
+
+        # Row of 3 inputs
+        dbc.Row([
+            # MIN
+            dbc.Col([
+                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_min"},
+                          type="number", value=defaults[f"{prefix}_min"], size="sm"),
+                html.Small("Min", className="text-muted d-block text-center")
+            ], width=4, className="pe-1"),
+
+            # INIT
+            dbc.Col([
+                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_init"},
+                          type="number", value=defaults[f"{prefix}_init"], size="sm",
+                          style={"border-color": "#007bff"}),  # Highlight initial guess
+                html.Small("Init", className="text-muted d-block text-center")
+            ], width=4, className="px-1"),
+
+            # MAX
+            dbc.Col([
+                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_max"},
+                          type="number", value=defaults[f"{prefix}_max"], size="sm"),
+                html.Small("Max", className="text-muted d-block text-center")
+            ], width=4, className="ps-1"),
+        ], className="g-0")  # No gutters for maximum compactness
+    ], className="mb-2 p-2 border-bottom")
 
 
 def make_label(key: str) -> str:
@@ -138,7 +255,7 @@ sidebar = html.Div([
     # html.H4("Control"),  # , className="display-6"),
     # html.Hr(),
     html.H6("Legend"),
-    LegendItem("black", "Data Points", mode='circle'),
+    LegendItem("blue", "Data Points", mode='circle'),
     LegendItem("rgb(31, 119, 180)", "GP Mean", mode='line'),
     LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ Confidence", mode='line'),
     LegendItem("magenta", "Peak Estimate & 1σ Range", mode='dashed'),
@@ -153,62 +270,86 @@ sidebar = html.Div([
     ], direction="horizontal", gap=2),
 
     # File Selectors
-    dbc.Label("lightcurve"),
-    dcc.Upload(id='upload-lc', children=html.Div(['Drag or ', html.A('Select')]),
-               style={'border': '1px dashed', 'padding': '10px', 'textAlign': 'center'}),
+    dbc.Label("lightcurve:"),
+    dcc.Upload(id='upload-lc',
+               children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
+               style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
 
-    dbc.Label("intervals", className="mt-3"),
-    dcc.Upload(id='intervals', children=html.Div(['Drag or ', html.A('Select')]),
-               style={'border': '1px dashed', 'padding': '10px', 'textAlign': 'center'}),
+    dbc.Label("intervals:", className="mt-3"),
+    dcc.Upload(id='upload-intervals',
+               children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
+               style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
 
     html.Hr(),
 
+    # Unpaired parameter:
+    create_float_input(
+        label="Noise Divisor",
+        default_val=params_float["noise_scale_divisor"],
+        tooltip_text="Scaling factor for assumed errors.",
+        index="noise_scale_divisor"
+    ),
+    # 2. White Noise Triple
+    create_parameter_triple(
+        main_label="White Kernel Bounds",
+        main_tooltip="Bounds and initial guess for the WhiteNoise kernel level.",
+        prefix="white_noise_level",
+        defaults=params_float
+    ),
+    # 3. Length Scale Triple (Assuming you add 'length_scale_min/max' to your dict)
+    create_parameter_triple(
+        main_label="RBF Length Scale",
+        main_tooltip="Smoothness control. Small = wiggly, Large = smooth.",
+        prefix="length_scale",
+        defaults=params_float
+    ),
+
     # 7 Float Entries in a Grid (2 columns)
-    dbc.Row([
-        dbc.Col(create_float_input(label="Noise divisor",
-                                   default_val=params_float["noise_scale_divisor"],
-                                   tooltip_text="Scaling factor applied to estimated noise when GUESS_SIGMA=True. "
-                                                "Larger value - smaller assumed errors -> more wiggly fit. "
-                                                "Smaller value - larger errors → smoother fit",
-                                   index="noise_scale_divisor"), width=6),
-
-        dbc.Col(create_float_input("Length scale",
-                                   params_float["length_scale_init"],
-                                   "This defines how quickly the model is allowed to vary with time. "
-                                   "It controls smoothness of the fit: smaller values -- more flexible (wiggly) model;"
-                                   "larger values -- smoother model. Reasonable first guess: "
-                                   "Estimate a typical width of a visible feature; "
-                                   "set length_scale_init ~ feature_width / 2",
-                                   "length_scale_init"), width=6),
-
-        dbc.Col(create_float_input("Sampling factor",
-                                   params_float["sampling_scale_factor"],
-                                   "Controls Lower bound of the Length scale. "
-                                   "Lower bound control prevents GP from fitting structures smaller "
-                                   "than data resolution: if too small - model overfits noise."
-                                   "Lower scale bound = sampling_scale * SAMPLING_SCALE_FACTOR",
-                                   "sampling_scale_factor"), width=6),
-
-        dbc.Col(create_float_input("Length factor",
-                                   params_float["length_scale_factor"],
-                                   "Length scale factor",
-                                   "length_scale_factor"), width=6),
-
-        dbc.Col(create_float_input("White noise",
-                                   params_float["white_noise_level_init"],
-                                   "White noise level init",
-                                   "white_noise_level_init"), width=6),
-
-        dbc.Col(create_float_input("White noise min",
-                                   params_float["white_noise_level_min"],
-                                   "White noise level min",
-                                   "white_noise_level_min"), width=6),
-
-        dbc.Col(create_float_input("White noise max",
-                                   params_float["white_noise_level_max"],
-                                   "White noise level max",
-                                   "white_noise_level_max"), width=6),
-    ]),
+    # dbc.Row([
+    #     dbc.Col(create_float_input(label="Noise divisor", step=0.1,
+    #                                default_val=params_float["noise_scale_divisor"],
+    #                                tooltip_text="Scaling factor applied to estimated noise when GUESS_SIGMA=True. "
+    #                                             "Larger value - smaller assumed errors -> more wiggly fit. "
+    #                                             "Smaller value - larger errors → smoother fit",
+    #                                index="noise_scale_divisor"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="Length scale", step=0.001,
+    #                                default_val=params_float["length_scale_init"],
+    #                                tooltip_text="This defines how quickly the model is allowed to vary with time. "
+    #                                "It controls smoothness of the fit: smaller values -- more flexible (wiggly) model;"
+    #                                "larger values -- smoother model. Reasonable first guess: "
+    #                                "Estimate a typical width of a visible feature; "
+    #                                "set length_scale_init ~ feature_width / 2",
+    #                                index="length_scale_init"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="Sampling factor", step=0.1,
+    #                                default_val=params_float["sampling_scale_factor"],
+    #                                tooltip_text="Controls Lower bound of the Length scale. "
+    #                                "Lower bound control prevents GP from fitting structures smaller "
+    #                                "than data resolution: if too small - model overfits noise."
+    #                                "Lower scale bound = sampling_scale * SAMPLING_SCALE_FACTOR",
+    #                                index="sampling_scale_factor"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="Length factor", step=0.1,
+    #                                default_val=params_float["length_scale_factor"],
+    #                                tooltip_text="Length scale factor",
+    #                                index="length_scale_factor"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="White noise", step=0.001,
+    #                                default_val=params_float["white_noise_level_init"],
+    #                                tooltip_text="White noise level init",
+    #                                index="white_noise_level_init"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="White noise min", step=0.001,
+    #                                default_val=params_float["white_noise_level_min"],
+    #                                tooltip_text="White noise level min",
+    #                                index="white_noise_level_min"), width=6),
+    #
+    #     dbc.Col(create_float_input(label="White noise max", step=0.1,
+    #                                default_val=params_float["white_noise_level_max"],
+    #                                tooltip_text="White noise level max",
+    #                                index="white_noise_level_max"), width=6),
+    # ]),
 
     # Checkbox with Tooltip
     html.Div([
@@ -218,7 +359,8 @@ sidebar = html.Div([
                     target="guess-sigma-label"),
     ], className="mt-3 mb-3"),
 
-], style={"padding": "2rem", "backgroundColor": "#f8f9fa", "height": "100vh"})
+    # ], style={"padding": "2rem", "backgroundColor": "#f8f9fa", "height": "100vh"})
+], style={"padding": "10px"})
 
 # Output Panel (Graphs in a Grid)
 content = html.Div([
@@ -241,31 +383,17 @@ app.layout = dbc.Container([
 ], fluid=True)
 
 # --- Callbacks (Logic) ---
-DEBUG = False
+DEBUG = True
 
 
 def create_gp_plot(gp_res, jd_max_guess=None):
     fig = go.Figure()
 
-    # 1. Data points with error bars
+    # region extract data from gp_res
     gp = gp_res['gp']
     x = gp.X_train_.ravel()
     y = gp.y_train_
     noise_sigma_norm = gp_res['noise_sigma_norm']
-    # print(f'{x=} {y=} {noise_sigma_norm=}')
-    fig.add_trace(go.Scatter(
-        # region fold me
-        x=x, y=y,
-        mode='markers',
-        marker=dict(color='black', size=6),
-        error_y=dict(type='data', array=np.full_like(y, noise_sigma_norm),
-                     visible=True, thickness=1, width=2,
-                     color='gray'),
-        name='data (with estimated errors)'
-        # endregion
-    ))
-
-    # 2. GP Mean Line
     x_grid = gp_res['jd_grid'].ravel()
     y_mean = gp_res['mean_grid'].ravel()
     y_std = gp_res['std_grid'].ravel()
@@ -275,16 +403,36 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     peaks_jd = gp_res['peaks_jd']
     mean_peak = gp_res['mean_peak']
     n_samples_uncert = gp_res['n_samples_uncert']
+    # endregion
 
+    # 1. Data Points: Custom hover format
+    fig.add_trace(go.Scatter(
+        # region fold me
+        x=x, y=y,
+        mode='markers',
+        marker=dict(color='black', size=6),
+        error_y=dict(type='data', array=np.full_like(y, noise_sigma_norm),
+                     visible=True, thickness=1, width=2,
+                     color='gray'),
+        # Customizing the tooltip text
+        # hovertemplate="<b>JD:</b> %{x:.3f}<br><b>norm flux:</b> %{y:.3f}<extra></extra>",
+        hovertemplate="Data: %{y:.3f}<extra></extra>",
+        name='Data'
+        # endregion
+    ))
+
+    # 2. GP Mean: Custom hover format
     fig.add_trace(go.Scatter(
         x=x_grid, y=y_mean,
         mode='lines',
         line=dict(color='rgb(31, 119, 180)', width=2),
+        hovertemplate="GP Mean: %{y:.3f}[norm flux]<extra></extra>",
         name='GP mean',
         # showlegend=False,
     ))
 
     # 3. GP Confidence Interval (±1σ)
+    # hover info is hidden
     # Plotly trick: Create a continuous boundary by reversing the lower bound
     fig.add_trace(go.Scatter(
         x=np.concatenate([x_grid, x_grid[::-1]]),
@@ -293,18 +441,20 @@ def create_gp_plot(gp_res, jd_max_guess=None):
         fillcolor='rgba(31, 119, 180, 0.25)',
         line=dict(color='rgba(255,255,255,0)'),
         hoverinfo="skip",
-        # showlegend=False,
+        showlegend=False,
         name='GP ±1σ'
     ))
 
     # 4. Posterior-sampled maxima (Alpha blending)
+    # hover info is hidden
     fig.add_trace(go.Scatter(
         x=peaks_jd,
         y=np.full_like(peaks_jd, 0.98 * mean_peak),
         mode='markers',
         marker=dict(color='orange', size=8, opacity=0.1),
-        name=f'Posterior peak draws (n={n_samples_uncert})',
-        # showlegend=False,
+        hoverinfo="skip",
+        showlegend=False,
+        # name=f'Posterior peak draws (n={n_samples_uncert})',
     ))
 
     # 5. Vertical Lines (Shapes/Vlines)
@@ -336,7 +486,6 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # 7. Layout and Labels
     fig.update_layout(
         # 1. Reduce margins to almost zero (top, bottom, left, right)
-        # margin=dict(l=40, r=10, t=40, b=40),
         margin=dict(l=0, r=10, t=20, b=20),
         showlegend=False,
         # 2. Place Legend INSIDE the plot area
@@ -349,10 +498,25 @@ def create_gp_plot(gp_res, jd_max_guess=None):
         #     font=dict(size=10)  # Smaller font
         # ),
         # 3. Design tweaks
-        title=dict(text=f'JD Peak: {jd_peak:.3f}', font=dict(size=14), y=0.95),
+        title=dict(text=f'   Peak: {jd_peak:.3f}', font=dict(size=14), y=0.95),
         template='plotly_white',
         height=400,  # Shorter height to see more rows at once
-        hovermode='x unified'  # Saves space by showing one tooltip for all traces
+        xaxis=dict(
+            # This controls the BIG bold number at the top of the unified tooltip
+            # '.3f' ensures 4 decimal places for the Julian Date
+            hoverformat='.3f',
+            title='jd',
+            tickfont=dict(size=10)
+        ),
+        hovermode='x unified',  # Show one tooltip for all traces.
+        # Plotly tries to be helpful by stacking information from every single trace into one giant box
+        # Seems, too helpful and too gigantic
+        # 'x unified' is great, but we need to style the label
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.9)",
+            font_size=12,
+            font_family="Rockwell"
+        )
     )
 
     return fig
@@ -377,11 +541,12 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # endregion
 )
 def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, float_values):
+    # TODO: be careful there with parameters order. Dangerous pitfall :-(
     p = {
         "noise_scale_divisor": float_values[0],
         "length_scale_init": float_values[1],
-        "sampling_scale_factor": float_values[2],
-        "length_scale_factor": float_values[3],
+        "length_scale_min": float_values[2],
+        "length_scale_max": float_values[3],
         "white_noise_level_init": float_values[4],
         "white_noise_level_min": float_values[5],
         "white_noise_level_max": float_values[6],
@@ -433,9 +598,9 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, float
                     config={  # type: ignore
                         'displaylogo': False,
                         'modeBarButtonsToRemove': ['pan2d', 'lasso2d', ' autoScale2d',
-                                                   'select2d',  'zoomIn2d', 'zoomOut2d'],
+                                                   'select2d', 'zoomIn2d', 'zoomOut2d'],
                         # 'displayModeBar': True,
-                        },
+                    },
                 ),
                 width=6,
                 className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
@@ -451,4 +616,8 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, float
 
 if __name__ == '__main__':
     # Debug mode enabled as requested
-    app.run(debug=True)
+    app.run(debug=True,
+            dev_tools_ui=True,  # will pop up a small blue circle in the bottom right of the browser.
+            # If a callback fails, it turns red and you can click it to see the full Python
+            # error without even looking at your IDE.
+            dev_tools_props_check=True)

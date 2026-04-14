@@ -62,7 +62,10 @@ LENGTH_SCALE_INIT = 0.054 / 2
 #
 # Lower bound control prevents GP from fitting structures smaller than data resolution.
 # If too small -- model overfits noise.
-SAMPLING_SCALE_FACTOR = 3
+# SAMPLING_SCALE_FACTOR = 3
+# I've changed my mind. This parameter and 'sampling-based' bounding confuses even me.
+# Let's shift to physical units, user directly see on the graph (abscissa-axis, i.g., JD)
+LENGTH_SCALE_MIN = LENGTH_SCALE_INIT / 10.0
 
 # ==========================
 # Upper bound control
@@ -72,7 +75,10 @@ SAMPLING_SCALE_FACTOR = 3
 # Upper bound = length_scale * LENGTH_SCALE_FACTOR
 # User can tune LENGTH_SCALE_FACTOR
 # Again, increasing LENGTH_SCALE_FACTOR allows the model bahave smoothly
-LENGTH_SCALE_FACTOR = 2
+# LENGTH_SCALE_FACTOR = 2
+# Again, Let's shift to physical units, visible directly by the user:
+LENGTH_SCALE_MAX = LENGTH_SCALE_INIT * 3
+
 
 # ========================
 # WhiteKernel parameters
@@ -303,7 +309,8 @@ def gp_peak_pipeline(
         n_grid=2000,
         n_samples_uncert=300,
         random_state=0,
-):
+        plot_final=False,
+) -> dict:
     """
     Fit GP to a fragment and estimate peak position (JD) with uncertainty.
 
@@ -313,12 +320,22 @@ def gp_peak_pipeline(
         Must contain 'jd' and 'flux'. May contain 'flux_err'
     jd_left, jd_right : float
         Interval to consider (inclusive).
+    params : dict
+        GP regression parameters:
+        - 'guess_sigma' If guess_sigma=True OR no valid errors → use MAD
+        - 'noise_scale_divisor' Empirical factor, allow user tune sigma estimated by algorthm
+        - 'length_scale_init' Initial guess about GP lenght scale
+        - 'length_scale_min', 'length_scale_max'    Bounds
+        - 'white_noise_level_init' Initial guess about White Kernel noise level
+        - 'white_noise_level_min', 'white_noise_level_max' Bounds
+
     n_grid : int
         Number of points in the fine evaluation grid (for mean/derivative).
     n_samples_uncert : int
         Number of posterior samples used to estimate JD uncertainty.
     random_state : int
         Seed for reproducible posterior sampling.
+    plot_final  : plot results as matplotlib graph (debug)
 
     Returns
     -------
@@ -327,11 +344,14 @@ def gp_peak_pipeline(
             'jd_peak': float,               # estimated peak JD (from GP mean)
             'jd_peak_std': float,           # uncertainty (std) from posterior samples
             'gp': GaussianProcessRegressor, # fitted GP object
+            'n_samples_uncert'              # number of samples to estimate moment uncertainty
+            'mean_peak'                     # mean peak
+            'peaks_jd'                      # raw peak JDs from posterior samples
+            'jd_grid'                       # evaluation grid
+            'mean_grid'                     # GP mean on grid
+            'std_grid'
+            'noise_sigma_norm'              # normalised sigma of the input data
         }
-            # 'jd_grid': ndarray,            # evaluation grid
-            # 'mean_grid': ndarray,          # GP mean on grid
-            # 'std_grid': ndarray,           # GP std on grid
-            # 'samples_peak_jds': ndarray    # raw peak JDs from posterior samples
     """
 
     # --- 1. select fragment ---
@@ -385,16 +405,17 @@ def gp_peak_pipeline(
                 constant_value_bounds=(y_norm_var * 0.01, y_norm_var * 100.0)
             ) *
             Matern(length_scale=length_scale,
+                   # length_scale_bounds=(
+                   #     sampling_scale * params['sampling_scale_factor'],
+                   #     length_scale * params['length_scale_factor']
+                   # ),
                    length_scale_bounds=(
-                       sampling_scale * params['sampling_scale_factor'],
-                       length_scale * params['length_scale_factor']
+                       params['length_scale_min'], params['length_scale_max']
                    ),
                    nu=2.5) +
             WhiteKernel(
                 noise_level=params['white_noise_level_init'],
-                noise_level_bounds=(
-                    params['white_noise_level_min'],
-                    params['white_noise_level_max']
+                noise_level_bounds=(params['white_noise_level_min'], params['white_noise_level_max']
                 )
             )
     )
@@ -446,6 +467,12 @@ def gp_peak_pipeline(
     peaks_jd = jd_grid.ravel()[peaks]
     jd_peak_std = float(np.std(peaks_jd))
 
+    # --- 10. plotting ---
+    if plot_final:
+        plot_GP_results(x, y_norm, noise_sigma_norm,
+                        jd_peak, mean_peak, peaks_jd, None, jd_peak_std,
+                        jd_grid, mean_grid, std_grid, n_samples_uncert)
+
     return {
         # "x": x,
         # "y_norm": y_norm,
@@ -491,16 +518,19 @@ def main():
                 df0,
                 jd_min,
                 jd_max,
-                {
+                params={
                     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
                     "length_scale_init": LENGTH_SCALE_INIT,
-                    "sampling_scale_factor": SAMPLING_SCALE_FACTOR,
-                    "length_scale_factor": LENGTH_SCALE_FACTOR,
+                    # "sampling_scale_factor": SAMPLING_SCALE_FACTOR,
+                    # "length_scale_factor": LENGTH_SCALE_FACTOR,
+                    "length_scale_min": LENGTH_SCALE_MIN,
+                    "length_scale_max": LENGTH_SCALE_MAX,
                     "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
                     "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
                     "white_noise_level_max": WHITE_NOISE_LEVEL_MAX,
                     "guess_sigma": GUESS_SIGMA
                 },
+                plot_final=True,
             )
 
             f.write(f'GP peak = {gp_res["jd_peak"]:.6f}  std = {gp_res["jd_peak_std"]:.6f}\n')
