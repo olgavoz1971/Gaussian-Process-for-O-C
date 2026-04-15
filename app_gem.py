@@ -7,7 +7,6 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from dash import callback_context
 
-
 import traceback
 import logging
 
@@ -22,6 +21,7 @@ from gp import (GUESS_SIGMA, LEN_MIN,
                 NOISE_SCALE_DIVISOR,
                 LENGTH_SCALE_INIT, LENGTH_SCALE_MIN, LENGTH_SCALE_MAX,
                 WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX)
+
 params_float = {
     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
     "length_scale_init": LENGTH_SCALE_INIT,
@@ -44,13 +44,17 @@ app = dash.Dash(__name__,
                 )
 
 
-# Callback for Lightcurve Upload
+# =========== callbacks =============
+
+
 @app.callback(
+    # region fold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),  # Targets the text inside the box
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),  # Grabs the filename
     prevent_initial_call=True
+    # endregion
 )
 def upload_lc(contents, filename):
     if contents is None:
@@ -107,9 +111,6 @@ def upload_lc(contents, filename):
     State('upload-intervals', 'filename'),
     prevent_initial_call=True
     # endregion
-    # Output('store-intervals-data', 'data'),
-    # Input('intervals', 'contents'),
-    # prevent_initial_call=True
 )
 def upload_intervals(contents, filename):
     if contents is None:
@@ -163,12 +164,276 @@ def upload_intervals(contents, filename):
 from dash import callback_context
 
 
+def create_gp_plot(gp_res, jd_max_guess=None):
+    fig = go.Figure()
+
+    # region extract data from gp_res
+    gp = gp_res['gp']
+    x = gp.X_train_.ravel()
+    y = gp.y_train_
+    noise_sigma_norm = gp_res['noise_sigma_norm']
+    x_grid = gp_res['jd_grid'].ravel()
+    y_mean = gp_res['mean_grid'].ravel()
+    y_std = gp_res['std_grid'].ravel()
+
+    jd_peak = gp_res['jd_peak']
+    jd_peak_std = gp_res['jd_peak_std']
+    peaks_jd = gp_res['peaks_jd']
+    mean_peak = gp_res['mean_peak']
+    n_samples_uncert = gp_res['n_samples_uncert']
+    # endregion
+
+    # 1. Data Points: Custom hover format
+    fig.add_trace(go.Scatter(
+        # region fold me
+        x=x, y=y,
+        mode='markers',
+        marker=dict(color='black', size=6),
+        error_y=dict(type='data', array=np.full_like(y, noise_sigma_norm),
+                     visible=True, thickness=1, width=2,
+                     color='gray'),
+        # Map the error to customdata so the template can see it
+        customdata=np.full_like(y, noise_sigma_norm),
+        # hovertemplate="<b>JD:</b> %{x:.3f}<br><b>norm flux:</b> %{y:.3f}<extra></extra>",
+        hovertemplate="Data: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
+        name='Data'
+        # endregion
+    ))
+
+    # 2. GP Mean: Custom hover format
+    fig.add_trace(go.Scatter(
+        x=x_grid, y=y_mean,
+        mode='lines',
+        line=dict(color='rgb(31, 119, 180)', width=2),
+        # Pass the grid of standard deviations to customdata
+        customdata=y_std,
+        hovertemplate="GP Mean: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
+        name='GP mean',
+        # showlegend=False,
+    ))
+
+    # 3. GP Confidence Interval (±1σ)
+    # hover info is hidden
+    # Plotly trick: Create a continuous boundary by reversing the lower bound
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([x_grid, x_grid[::-1]]),
+        y=np.concatenate([y_mean + y_std, (y_mean - y_std)[::-1]]),
+        fill='toself',
+        fillcolor='rgba(31, 119, 180, 0.25)',
+        line=dict(color='rgba(255,255,255,0)'),
+        hoverinfo="skip",
+        showlegend=False,
+        name='GP ±1σ'
+    ))
+
+    # 4. Posterior-sampled maxima (Alpha blending)
+    # hover info is hidden
+    fig.add_trace(go.Scatter(
+        x=peaks_jd,
+        y=np.full_like(peaks_jd, 0.98 * mean_peak),
+        mode='markers',
+        marker=dict(color='orange', size=8, opacity=0.1),
+        hoverinfo="skip",
+        showlegend=False,
+        # name=f'Posterior peak draws (n={n_samples_uncert})',
+    ))
+
+    # 5. Vertical Lines (Shapes/Vlines)
+    # Peak Guess
+    if jd_max_guess is not None:
+        fig.add_vline(x=jd_max_guess, line_width=1.5, line_dash="dot",
+                      line_color="green",
+                      # annotation_text="Guess"
+                      )
+
+    # GP Peak and Sigma range
+    fig.add_vline(x=float(jd_peak), line_width=2, line_dash="dash", line_color="magenta",
+                  # annotation_text=f"GP peak: {jd_peak:.3f}"
+                  )
+
+    # 6. Sigma Range Shaded Area (Vertical Fill)
+    fig.add_vrect(
+        x0=float(jd_peak - jd_peak_std),
+        x1=float(jd_peak + jd_peak_std),
+        fillcolor="magenta", opacity=0.1,
+        layer="below", line_width=0,
+        name='±1σ range'
+    )
+
+    # Add the boundary dotted lines for the sigma range
+    fig.add_vline(x=float(jd_peak - jd_peak_std), line_width=2, line_dash="dot", line_color="magenta")
+    fig.add_vline(x=float(jd_peak + jd_peak_std), line_width=2, line_dash="dot", line_color="magenta")
+
+    # 7. Layout and Labels
+    fig.update_layout(
+        # 1. Reduce margins to almost zero (top, bottom, left, right)
+        margin=dict(l=0, r=10, t=20, b=20),
+        showlegend=False,
+        # 2. Place Legend INSIDE the plot area
+        # legend=dict(
+        #     yanchor="top",
+        #     y=0.99,
+        #     xanchor="right",
+        #     x=0.99,
+        #     bgcolor="rgba(255, 255, 255, 0.5)",  # Semi-transparent
+        #     font=dict(size=10)  # Smaller font
+        # ),
+        # 3. Design tweaks
+        title=dict(text=f'   Peak: {jd_peak:.3f}', font=dict(size=14), y=0.95),
+        template='plotly_white',
+        height=400,  # Shorter height to see more rows at once
+        xaxis=dict(
+            # This controls the BIG bold number at the top of the unified tooltip
+            # '.3f' ensures 4 decimal places for the Julian Date
+            hoverformat='.3f',
+            # title='jd',
+            tickfont=dict(size=10)
+        ),
+        hovermode='x unified',  # Show one tooltip for all traces.
+        # Plotly tries to be helpful by stacking information from every single trace into one giant box
+        # Seems, too helpful and too gigantic
+        # 'x unified' is great, but we need to style the label
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.9)",
+            font_size=12,
+            font_family="Rockwell"
+        )
+    )
+
+    return fig
+
+
 @app.callback(
+    # region fold me
+    Output('graphs-container', 'children', allow_duplicate=True),
+    Input('run-btn', 'n_clicks'),
+    State('store-lc-data', 'data'),
+    State('store-intervals-data', 'data'),
+    State('guess-sigma', 'value'),
+    State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
+    State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
+    background=True,
+    cancel=[Input("cancel-btn", "n_clicks")],
+    running=[
+        (Output("run-btn", "disabled"), True, False),
+        (Output("cancel-btn", "disabled"), False, True),
+    ],
+    progress=[Output("graphs-container", "children")],  # Updates UI during execution
+    prevent_initial_call=True
+    # endregion
+)
+def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, float_values):
+    p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
+    # Add a standalone guess_sigma
+    p['guess_sigma'] = guess_sigma
+
+    # 1. Validation: Ensure files are loaded
+    if DEBUG:
+        from gp import FILENAME_IN, INTERVALS_FILE, load_intervals_from_file
+        intervals = load_intervals_from_file(INTERVALS_FILE)
+        df_lc = read_lc(FILENAME_IN)
+        df_lc = add_flux(df_lc)
+    else:
+        if not lc_json_string or not intervals:
+            return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
+        di = json.loads(lc_json_string)
+        df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
+
+    figs = []
+    i = 0
+    with open('maxima_gp.dat', 'a') as f:
+        for piece in intervals:
+            jd_min, jd_max = piece[0], piece[-1]
+            jd_max_guess = piece[1] if len(piece) > 2 else None
+            # print(f'Start with {jd_min} : {jd_max} piece')
+
+            if len(select_jd_interval(df_lc, jd_min, jd_max)) < LEN_MIN:
+                continue
+
+            try:
+                # --- THE FRAGILE MAGIC ---
+                gp_res = gp_peak_pipeline(df_lc, jd_min, jd_max, params=p)
+
+                # Write to file only on success
+                f.write(f'GP peak = {gp_res["jd_peak"]:.6f}  std = {gp_res["jd_peak_std"]:.6f}\n')
+
+                # Create Figure
+                fig = create_gp_plot(gp_res, jd_max_guess=jd_max_guess)
+
+                # Extract kernel params
+                optimized_kernel = gp_res['gp'].kernel_
+                optimized_params = optimized_kernel.get_params()
+                opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
+                opt_w = optimized_params.get('k2__noise_level', 0.0)
+
+                # Define colours
+                l_color = "danger" if (opt_l <= p['length_scale_min'] * 1.01 or
+                                       opt_l >= p['length_scale_max'] * 0.99) else "info"
+                w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or
+                                       opt_w >= p['white_noise_level_max'] * 0.99) else "info"
+
+                # Create the successful graph card
+                item_to_append = dbc.Col(
+                    html.Div([
+                        # Metadata Badge Row
+                        html.Div([
+                            dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
+                            dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
+                            dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
+                        ], style={"textAlign": "center", "marginBottom": "2px"}),
+                        dcc.Graph(
+                            figure=fig,
+                            config={  # type: ignore
+                                'displaylogo': False,
+                                'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d']
+                            }
+                        ),
+                    ], style={"border": "1px solid #eee", "padding": "5px", "borderRadius": "5px"}),
+                    width=6, className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
+                )
+
+            except Exception as e:
+                # --- THE SAFETY NET ---
+                logging.error(f"GP Failure at {jd_min}: {str(e)}")
+                logging.error(traceback.format_exc())
+
+                err_id = f"err-gp-{str(jd_min).replace('.', '')}"
+
+                item_to_append = dbc.Col(
+                    html.Div([
+                        dbc.Alert([
+                            html.I(className="bi bi-exclamation-octagon me-2"),
+                            html.B("GP Fit Failed"),
+                            html.Div(f"Interval: {jd_min:.2f} - {jd_max:.2f}",
+                                     style={"fontSize": "0.8rem"}),
+                            html.Hr(),
+                            html.Div("Hover for technical details", id=err_id,
+                                     style={"fontSize": "0.7rem", "cursor": "help"})
+                        ], color="danger", style={"height": "400px", "display": "flex",
+                                                  "flexDirection": "column", "justifyContent": "center",
+                                                  "textAlign": "center"}),
+                        dbc.Tooltip(str(e), target=err_id)
+                    ], style={"padding": "5px"}),
+                    width=6, className="px-1 mb-2"
+                )
+
+                # Append whatever we created (Graph or Error Alert)
+            figs.append(item_to_append)
+            # Spit out the current list of figures to the UI
+            # This updates the 'progress' Output (graphs-container) immediately
+            set_progress([figs])
+
+    return figs
+
+
+@app.callback(
+    # region fold me
     Output({'type': 'float-input', 'index': ALL}, 'value'),
     Output('guess-sigma', 'value'),
     Input('reset-btn', 'n_clicks'),
     State({'type': 'float-input', 'index': ALL}, 'id'),
     prevent_initial_call=True
+    # endregion
 )
 def reset_params(n_clicks, ids):
     if n_clicks is None:
@@ -413,264 +678,6 @@ app.layout = dbc.Container([
 
 # --- Callbacks (Logic) ---
 DEBUG = False
-
-
-def create_gp_plot(gp_res, jd_max_guess=None):
-    fig = go.Figure()
-
-    # region extract data from gp_res
-    gp = gp_res['gp']
-    x = gp.X_train_.ravel()
-    y = gp.y_train_
-    noise_sigma_norm = gp_res['noise_sigma_norm']
-    x_grid = gp_res['jd_grid'].ravel()
-    y_mean = gp_res['mean_grid'].ravel()
-    y_std = gp_res['std_grid'].ravel()
-
-    jd_peak = gp_res['jd_peak']
-    jd_peak_std = gp_res['jd_peak_std']
-    peaks_jd = gp_res['peaks_jd']
-    mean_peak = gp_res['mean_peak']
-    n_samples_uncert = gp_res['n_samples_uncert']
-    # endregion
-
-    # 1. Data Points: Custom hover format
-    fig.add_trace(go.Scatter(
-        # region fold me
-        x=x, y=y,
-        mode='markers',
-        marker=dict(color='black', size=6),
-        error_y=dict(type='data', array=np.full_like(y, noise_sigma_norm),
-                     visible=True, thickness=1, width=2,
-                     color='gray'),
-        # Map the error to customdata so the template can see it
-        customdata=np.full_like(y, noise_sigma_norm),
-        # hovertemplate="<b>JD:</b> %{x:.3f}<br><b>norm flux:</b> %{y:.3f}<extra></extra>",
-        hovertemplate="Data: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
-        name='Data'
-        # endregion
-    ))
-
-    # 2. GP Mean: Custom hover format
-    fig.add_trace(go.Scatter(
-        x=x_grid, y=y_mean,
-        mode='lines',
-        line=dict(color='rgb(31, 119, 180)', width=2),
-        # Pass the grid of standard deviations to customdata
-        customdata=y_std,
-        hovertemplate="GP Mean: %{y:.3f} ± %{customdata:.3f}<extra></extra>",
-        name='GP mean',
-        # showlegend=False,
-    ))
-
-    # 3. GP Confidence Interval (±1σ)
-    # hover info is hidden
-    # Plotly trick: Create a continuous boundary by reversing the lower bound
-    fig.add_trace(go.Scatter(
-        x=np.concatenate([x_grid, x_grid[::-1]]),
-        y=np.concatenate([y_mean + y_std, (y_mean - y_std)[::-1]]),
-        fill='toself',
-        fillcolor='rgba(31, 119, 180, 0.25)',
-        line=dict(color='rgba(255,255,255,0)'),
-        hoverinfo="skip",
-        showlegend=False,
-        name='GP ±1σ'
-    ))
-
-    # 4. Posterior-sampled maxima (Alpha blending)
-    # hover info is hidden
-    fig.add_trace(go.Scatter(
-        x=peaks_jd,
-        y=np.full_like(peaks_jd, 0.98 * mean_peak),
-        mode='markers',
-        marker=dict(color='orange', size=8, opacity=0.1),
-        hoverinfo="skip",
-        showlegend=False,
-        # name=f'Posterior peak draws (n={n_samples_uncert})',
-    ))
-
-    # 5. Vertical Lines (Shapes/Vlines)
-    # Peak Guess
-    if jd_max_guess is not None:
-        fig.add_vline(x=jd_max_guess, line_width=1.5, line_dash="dot",
-                      line_color="green",
-                      # annotation_text="Guess"
-                      )
-
-    # GP Peak and Sigma range
-    fig.add_vline(x=float(jd_peak), line_width=2, line_dash="dash", line_color="magenta",
-                  # annotation_text=f"GP peak: {jd_peak:.3f}"
-                  )
-
-    # 6. Sigma Range Shaded Area (Vertical Fill)
-    fig.add_vrect(
-        x0=float(jd_peak - jd_peak_std),
-        x1=float(jd_peak + jd_peak_std),
-        fillcolor="magenta", opacity=0.1,
-        layer="below", line_width=0,
-        name='±1σ range'
-    )
-
-    # Add the boundary dotted lines for the sigma range
-    fig.add_vline(x=float(jd_peak - jd_peak_std), line_width=2, line_dash="dot", line_color="magenta")
-    fig.add_vline(x=float(jd_peak + jd_peak_std), line_width=2, line_dash="dot", line_color="magenta")
-
-    # 7. Layout and Labels
-    fig.update_layout(
-        # 1. Reduce margins to almost zero (top, bottom, left, right)
-        margin=dict(l=0, r=10, t=20, b=20),
-        showlegend=False,
-        # 2. Place Legend INSIDE the plot area
-        # legend=dict(
-        #     yanchor="top",
-        #     y=0.99,
-        #     xanchor="right",
-        #     x=0.99,
-        #     bgcolor="rgba(255, 255, 255, 0.5)",  # Semi-transparent
-        #     font=dict(size=10)  # Smaller font
-        # ),
-        # 3. Design tweaks
-        title=dict(text=f'   Peak: {jd_peak:.3f}', font=dict(size=14), y=0.95),
-        template='plotly_white',
-        height=400,  # Shorter height to see more rows at once
-        xaxis=dict(
-            # This controls the BIG bold number at the top of the unified tooltip
-            # '.3f' ensures 4 decimal places for the Julian Date
-            hoverformat='.3f',
-            # title='jd',
-            tickfont=dict(size=10)
-        ),
-        hovermode='x unified',  # Show one tooltip for all traces.
-        # Plotly tries to be helpful by stacking information from every single trace into one giant box
-        # Seems, too helpful and too gigantic
-        # 'x unified' is great, but we need to style the label
-        hoverlabel=dict(
-            bgcolor="rgba(255,255,255,0.9)",
-            font_size=12,
-            font_family="Rockwell"
-        )
-    )
-
-    return fig
-
-
-@app.callback(
-    # region fold me
-    Output('graphs-container', 'children', allow_duplicate=True),
-    Input('run-btn', 'n_clicks'),
-    State('store-lc-data', 'data'),
-    State('store-intervals-data', 'data'),
-    State('guess-sigma', 'value'),
-    State({'type': 'float-input', 'index': ALL}, 'id'),   # Get the IDs
-    State({'type': 'float-input', 'index': ALL}, 'value'),   # Get the values
-    background=True,
-    cancel=[Input("cancel-btn", "n_clicks")],
-    running=[
-        (Output("run-btn", "disabled"), True, False),
-        (Output("cancel-btn", "disabled"), False, True),
-    ],
-    progress=[Output("graphs-container", "children")],  # Updates UI during execution
-    prevent_initial_call=True
-    # endregion
-)
-def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, float_values):
-    p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
-    # Add a standalone guess_sigma
-    p['guess_sigma'] = guess_sigma
-
-    # 1. Validation: Ensure files are loaded
-    if DEBUG:
-        from gp import FILENAME_IN, INTERVALS_FILE, load_intervals_from_file
-        intervals = load_intervals_from_file(INTERVALS_FILE)
-        df_lc = read_lc(FILENAME_IN)
-        df_lc = add_flux(df_lc)
-    else:
-        if not lc_json_string or not intervals:
-            return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
-        di = json.loads(lc_json_string)
-        df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
-
-    figs = []
-    i = 0
-    with open('maxima_gp.dat', 'a') as f:
-        for piece in intervals:
-            jd_min, jd_max = piece[0], piece[-1]
-            jd_max_guess = piece[1] if len(piece) > 2 else None
-            # print(f'Start with {jd_min} : {jd_max} piece')
-
-            if len(select_jd_interval(df_lc, jd_min, jd_max)) < LEN_MIN:
-                continue
-
-            i += 1
-            gp_res = gp_peak_pipeline(
-                df_lc,
-                jd_min,
-                jd_max,
-                params=p,
-            )
-
-            f.write(f'GP peak = {gp_res["jd_peak"]:.6f}  std = {gp_res["jd_peak_std"]:.6f}\n')
-            # x = gp_res["gp"].X_train_
-            # y_norm = gp_res["gp"].y_train_
-            # alpha = gp_res["gp"].alpha
-
-            fig = create_gp_plot(gp_res, jd_max_guess=jd_max_guess)
-
-            # Extract optimized values (formatted for brevity)
-            optimized_kernel = gp_res['gp'].kernel_
-            optimized_params = optimized_kernel.get_params()
-            opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
-            opt_w = optimized_params.get('k2__noise_level', 0.0)
-
-            l_color = "danger" if (opt_l <= p['length_scale_min'] * 1.01 or
-                                   opt_l >= p['length_scale_max'] * 0.99) else "info"
-            w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or
-                                   opt_w >= p['white_noise_level_max'] * 0.99) else "info"
-
-            new_graph = dbc.Col(
-                html.Div([
-                    # Metadata Badge Row
-                    html.Div([
-                        dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
-                        dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
-                        dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
-                    ], style={"textAlign": "center", "marginBottom": "2px"}),
-
-                    dcc.Graph(
-                        figure=fig,
-                        config={    # type: ignore
-                            'displaylogo': False,
-                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d',
-                                                       'select2d', 'zoomIn2d', 'zoomOut2d']
-                            # 'displayModeBar': True,
-                        },
-                    ),
-                ], style={"border": "1px solid #eee", "padding": "5px", "borderRadius": "5px"}),
-                width=6,
-                className="px-1 mb-2"   # "px-1" reduces horizontal padding between columns
-            )
-            # new_graph = dbc.Col(
-            #     dcc.Graph(
-            #         figure=fig,
-            #         # ONLY leave 'Reset Axes' and 'Box Select'
-            #         config={  # type: ignore
-            #             'displaylogo': False,
-            #             'modeBarButtonsToRemove': ['pan2d', 'lasso2d', ' autoScale2d',
-            #                                        'select2d', 'zoomIn2d', 'zoomOut2d'],
-            #             # 'displayModeBar': True,
-            #         },
-            #     ),
-            #     width=6,
-            #     className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
-            # )
-            figs.append(new_graph)
-
-            # "Spit out" the current list of figures to the UI
-            # This updates the 'progress' Output (graphs-container) immediately
-            set_progress([figs])
-
-    return figs
-
 
 if __name__ == '__main__':
     # Debug mode enabled as requested
