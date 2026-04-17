@@ -201,7 +201,7 @@ def read_lc(full_filename):
     return df
 
 
-def load_intervals(file_obj):
+def load_interval_triples(file_obj):
     print(f'Loading intervals from file_obj...')
     result = []
     for line in file_obj:
@@ -215,6 +215,20 @@ def load_intervals(file_obj):
     return result
 
 
+def load_intervals(file_obj):
+    print(f'Loading intervals from file_obj...')
+    result = []
+    for line in file_obj:
+        if isinstance(line, bytes):
+            line = line.decode("utf-8")
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        a, b = map(float, line.split())
+        result.append((a, b))
+    return result
+
+
 def load_intervals_from_file(filename_intervals):
     print(f'Loading intervals from file...{filename_intervals}')
     result = []
@@ -222,8 +236,8 @@ def load_intervals_from_file(filename_intervals):
         for line in f:
             if not line.strip() or line.startswith("#"):
                 continue
-            a, b, c = map(float, line.split())
-            result.append((a, b, c))
+            a, b = map(float, line.split())
+            result.append((a, b))
     return result
 
 

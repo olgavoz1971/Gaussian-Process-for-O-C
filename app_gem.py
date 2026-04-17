@@ -1,3 +1,30 @@
+# --- Documentation Content ---
+DOC_MARKDOWN = """
+# Lightcurve Extreme Modeler (Working draft)
+## TBD-TBD-TBD-TBD
+## What is this tool?
+This application is designed for the characterization of local features in lightcurves of variable stars.  
+This tool uses Gaussian Process (GP) regression to model the data locally.
+
+## Why Gaussian Processes (GP)?
+Standard polynomial fitting or simple spline interpolation often fails to capture the stochastic nature of stellar 
+variability or can be biased by outliers. 
+* **GP** provides a non-parametric way to model the signal.
+* It provides **formal uncertainty (&sigma;)** for the timing of the extremum.
+* It handles non-uniform sampling (gaps in data) and non-symmetrical features much better than traditional methods.
+
+## Workflow
+1. **Preparation:** Upload your lightcurve and define the time intervals where you suspect a feature exists.
+2. **Execution:** The GP engine optimizes hyperparameters for each interval.
+3. **Review:** Visually confirm the fit and download the precise timestamps of the extrema.
+
+## GP parameters explanation and hints
+TBD-TBD-TBD-TBD...
+
+## Extremum times uncertainties estimation
+TDB-TBD-TBD-TBD
+"""
+
 import dash
 import diskcache
 import pandas as pd
@@ -7,20 +34,24 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from dash import callback_context
 
-import traceback
-import logging
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 import base64
 import io
 import numpy as np
 
-from gp import (GUESS_SIGMA, LEN_MIN,
-                read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
-                NOISE_SCALE_DIVISOR,
-                LENGTH_SCALE_INIT, LENGTH_SCALE_MIN, LENGTH_SCALE_MAX,
-                WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX)
+import traceback
+import logging
+
+from gp import (
+    GUESS_SIGMA, LEN_MIN,
+    read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
+    NOISE_SCALE_DIVISOR,
+    LENGTH_SCALE_INIT, LENGTH_SCALE_MIN, LENGTH_SCALE_MAX,
+    WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX
+)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+DEBUG = False
 
 params_float = {
     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
@@ -43,6 +74,8 @@ app = dash.Dash(__name__,
                 background_callback_manager=background_callback_manager
                 )
 
+
+# ==================== Layout utils ===================
 
 def create_float_input(label, default_val, tooltip_text, index, step=1.0):
     """Helper to create labeled float inputs with tooltips."""
@@ -94,11 +127,6 @@ def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict, st
     ], className="mb-2 p-2 border-bottom")
 
 
-def make_label(key: str) -> str:
-    return key.replace("_", " ").capitalize()
-
-
-# Sidebar Layout (Input Panel)
 def LegendItem(color, label, mode='line'):
     # mode can be: 'line', 'dashed', or 'circle'
     # Base style for the visual indicator
@@ -137,7 +165,116 @@ def LegendItem(color, label, mode='line'):
     ], style={"margin-bottom": "4px", "display": "flex", "align-items": "center"})
 
 
-sidebar = html.Div([
+# ==================== Lightcurve GUI ==================
+
+sidebar_lc = html.Div([
+    # 1. PHASE FOLDING CONTROLS
+    html.Label("Phase Folding", className="fw-bold"),
+    dbc.Checklist(
+        options=[{"label": "Fold", "value": 1}],  # type: ignore
+        value=[],
+        id="folding-switch",
+        switch=True,
+        className="mb-2"
+    ),
+    dbc.InputGroup([
+        dbc.InputGroupText("P"),
+        dbc.Input(id="input-period", type="number", placeholder="Period (days)"),
+    ], size="sm", className="mb-1"),
+    dbc.InputGroup([
+        dbc.InputGroupText("T₀"),
+        dbc.Input(id="input-epoch", type="number", placeholder="Epoch (JD)"),
+    ], size="sm", className="mb-3"),
+
+    html.Hr(),
+
+    # 2. VIEW SETTINGS
+    html.Label("View Settings", className="fw-bold"),
+    dbc.RadioItems(
+        options=[  # type: ignore
+            {"label": "Magnitudes", "value": "mag"},
+            {"label": "Flux", "value": "flux"},
+        ],
+        value="mag",
+        id="view-mode-radio",
+        className="mb-3",
+        style={"fontSize": "0.9rem"}
+    ),
+
+    html.Hr(),
+
+    #  3. ACTION BUTTONS
+    html.Label("Interval control", className="fw-bold"),
+    dbc.Button(
+        [html.I(className="bi bi-plus-circle me-2"), "Add Selection"],
+        id="btn-add-interval", color="primary", className="w-100 mb-2"
+    ),
+    # CLEAR button
+    dbc.Button(
+        [html.I(className="bi bi-trash3 me-2"), "Clear All Intervals"],
+        id="btn-clear-intervals", color="outline-danger",
+        className="w-100", size="sm"
+    ),
+
+    html.Hr(),
+
+    # 4. --- EXPORT ---
+    html.Label("Export Settings", className="fw-bold"),
+    dbc.InputGroup([
+        dbc.InputGroupText("Filename"),
+        dbc.Input(
+            id="export-intervals-filename",
+            placeholder="intervals_export",
+            type="text",
+            value="my_intervals"    # Default value
+        ),
+        # dbc.InputGroupText(".intervals"),
+    ], size="sm", className="mb-2"),
+
+    # DOWNLOAD button
+    dbc.Button(
+        [html.I(className="bi bi-download me-2"), "Download File"],
+        id="btn-download-intervals",
+        color="success",
+        className="w-100 mb-2",
+        size="sm"
+    ),
+    dcc.Download(id="download-intervals-file")
+], className="p-3 bg-light border rounded shadow-sm")
+
+graph_lc = html.Div([
+    dcc.Graph(
+        id='prep-graph',
+        config={  # type: ignore
+            'scrollZoom': True,
+            'modeBarButtonsToRemove': [
+                'zoomIn2d',  # Hide Zoom In
+                'zoomOut2d',  # Hide Zoom Out
+                'lasso2d',  # Hide Lasso
+                # 'select2d'  # Hide the default box-select (if you only want 'drawrect')
+            ],
+            'modeBarButtonsToAdd': ['drawrect', 'eraseshape'],
+            'displaylogo': False
+        },
+        style={'height': '600px'}
+    ),
+    dbc.Alert(
+        "Tip: Use the 'Box Select' tool to highlight a region for the GP fit.",
+        color="info", className="mt-2 py-1 small"
+    )
+], className="border rounded p-2 bg-white")
+
+intervals_registry = html.Div([
+    html.H6("Selected Intervals", className="fw-bold mb-3"),
+    html.Div(id='registry-list-container', children=[
+        # We'll use a Dash Table or a List of Cards here
+        html.P("No intervals selected.", className="text-muted small")
+    ])
+], className="p-3 border rounded bg-light", style={'height': '500px', 'overflowY': 'auto'})
+
+# ===================  GP GUI ===========================
+
+sidebar_gp = html.Div([
     # html.H4("Control"),  # , className="display-6"),
     # html.Hr(),
     html.H6("Legend"),
@@ -156,15 +293,15 @@ sidebar = html.Div([
     ], direction="horizontal", gap=2),
 
     # File Selectors
-    dbc.Label("lightcurve:"),
-    dcc.Upload(id='upload-lc',
-               children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
-               style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
+    # dbc.Label("lightcurve:"),
+    # dcc.Upload(id='upload-lc',
+    #            children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
+    #            style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
 
-    dbc.Label("intervals:", className="mt-3"),
-    dcc.Upload(id='upload-intervals',
-               children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
-               style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
+    # dbc.Label("intervals:", className="mt-3"),
+    # dcc.Upload(id='upload-intervals',
+    #            children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
+    #            style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
 
     html.Hr(),
     dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="mt-3"),
@@ -203,9 +340,9 @@ sidebar = html.Div([
 ], style={"padding": "10px"})
 
 # Output Panel (Graphs in a Grid)
-content = html.Div([
+graph_gp = html.Div([
     html.Div(id='finished-signal', style={'display': 'none'}),  # just as a switch-modes-trigger
-    html.H4("Analysis Progress: normalised flux vs JD"),
+    html.H4("Results: Normalised flux vs JD"),
     # 1. LIVE VIEW: Shows only graphs, no interactivity
     dbc.Row(id='live-graphs-container', style={'display': 'flex'}, className="g-2"),
 
@@ -231,35 +368,404 @@ content = html.Div([
     dcc.Store(id='store-results-data')
 ], style={"padding": "2rem"})
 
+# =====================  LAYOUT ==================================================
 
-# Main App Layout
 app.layout = dbc.Container([
+    # --- HEADER SECTION ---
+    dbc.Row([
+        dbc.Col([
+            # html.H1("Astro-GP", className="display-4 text-primary mb-0"),
+            # html.P("Lightcurves Extreme Modeler", className="lead text-muted")
+            html.H1("Lightcurve Extreme Modeler (working draft")  # , className="display-4 text-primary mb-0")
+        ], width="auto"),
+        dbc.Col(
+            dbc.Button([html.I(className="bi bi-question-circle me-2"), "About"],
+                       id="open-help", color="outline-secondary", className="mb-2"),
+            width="auto", className="ms-auto d-flex align-items-end"
+        ),
+    ], className="mb-4 border-bottom pb-3"),
+
+    # --- THE HELP MODAL ---
+    dbc.Modal([
+        dbc.ModalHeader(dbc.ModalTitle("Description")),
+        dbc.ModalBody(
+            dcc.Markdown(DOC_MARKDOWN, dangerously_allow_html=True),
+            style={"maxHeight": "75vh", "overflowY": "auto"}
+        ),
+        dbc.ModalFooter(
+            dbc.Button("Thanks", id="close-help", className="ms-auto", n_clicks=0)
+        ),
+    ], id="help-modal", size="xl", is_open=False),
 
     dcc.Store(id='store-lc-data'),
     dcc.Store(id='store-intervals-data'),
 
-    dbc.Row([
-        dbc.Col(sidebar, width=3),
-        dbc.Col(content, width=9),
-    ])
+    # --- 2. GLOBAL DATA HUB
+
+    dbc.Card([
+        # dbc.CardHeader(html.B("Data Management")),
+        dbc.CardBody([
+            dbc.Row([
+                # Lightcurve Upload
+                dbc.Col([
+                    html.Label("Lightcurve", className="small fw-bold"),
+                    dcc.Upload(
+                        id='upload-lc',
+                        children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
+                        className="upload-box",  # We style this in the local style.css
+                        style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px', 'textAlign': 'center'},
+                    ),
+                    # html.Div(id='lc-status-msg', className="small mt-1")
+                ], width=6),
+
+                # Intervals Upload
+                dbc.Col([
+                    html.Label("Intervals", className="small fw-bold"),
+                    dcc.Upload(
+                        id='upload-intervals',
+                        children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
+                        className="upload-box",  # We style this in the local style.css
+                        style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px', 'textAlign': 'center'},
+                        # style={
+                        #     'width': '100%', 'height': '50px', 'lineHeight': '50px',
+                        #     'borderWidth': '1px', 'borderStyle': 'dashed',
+                        #     'borderRadius': '5px', 'textAlign': 'center'
+                        # }
+                    ),
+                    html.Div(id='int-status-msg', className="small mt-1")
+                ], width=6),
+
+                # # Global Summary Metrics
+                # dbc.Col([
+                #     html.Div([
+                #         html.P(id='data-summary-text', children="No data loaded.",
+                #                className="text-muted small mb-0")
+                #     ], className="p-2 border rounded bg-light", style={'height': '75px'})
+                # ], width=4),
+            ])
+        ])
+    ], className="mb-4 shadow-sm"),
+
+    # --- 3. THE WORKFLOW ACCORDION ---
+
+    dbc.Accordion([
+        dbc.AccordionItem(
+            item_id="accordion-lc",
+            title="Lightcurve and Intervals",
+            children=[
+                dbc.Row([
+                    dbc.Col(sidebar_lc, width=3),
+                    dbc.Col(graph_lc, width=6),
+                    dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
+
+                ]),
+            ],
+        ),
+
+        # --- EXISTING STEP 2: ANALYSIS (The "Monster") ---
+        dbc.AccordionItem(
+            item_id="accordion-gp",
+            title="Gaussian Process",
+            children=[
+                dbc.Row([
+                    dbc.Col(sidebar_gp, width=3),
+                    dbc.Col(graph_gp, width=9),
+                ]),
+                html.Div(id="main-analysis-wrapper")
+            ],
+        ),
+    ], id="main-workflow-accordion", active_item="accordion-lc"),
+
 ], fluid=True)
 
-DEBUG = False
+
+# ===================== CALLBACKS ================================================
+
+@app.callback(
+    # region unfold
+    Output("help-modal", "is_open"),
+    [Input("open-help", "n_clicks"), Input("close-help", "n_clicks")],
+    [State("help-modal", "is_open")],
+    # endregion
+)
+def toggle_modal(n1, n2, is_open):
+    if n1 or n2:
+        return not is_open
+    return is_open
 
 
-# =========== callbacks =============
+# ------ lightcurve visualisation -------
 
+@app.callback(
+    # region unfold
+    Output('prep-graph', 'figure'),
+    Input('store-lc-data', 'data'),  # Assuming data is stored here after upload
+    Input('store-intervals-data', 'data'),
+    Input('folding-switch', 'value'),
+    Input('input-period', 'value'),
+    Input('input-epoch', 'value'),
+    Input('view-mode-radio', 'value')
+    # endregion
+)
+def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch, view_mode):
+    if not lc_json_string:
+        return go.Figure().update_layout(title="Upload data to see plot")
+
+    di = json.loads(lc_json_string)
+    df = pd.DataFrame(data=di['data'], columns=di['columns'])
+
+    x_data = df['jd']
+    y_data = df['mag']
+    x_label = "Julian Date (JD)"
+
+    if folding_on and period and period > 0:
+        t0 = epoch if epoch is not None else x_data.min()
+        x_data = ((x_data - t0) / period) % 1.0
+        x_label = f"Phase (P={period} d, T₀={t0})"
+
+    # 3. Build Figure
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_data, y=y_data,
+        mode='markers',
+        hoverinfo='none',
+        marker=dict(
+            size=4,
+            color='blue',  # Standard Plotly Blue, or use '#003366' for even darker
+            opacity=0.7,
+            line=dict(width=0.5, color='White')  # Adds definition to overlapping points
+        ),
+        name="Data"
+    ))
+
+    fig.update_layout(
+        xaxis_title=x_label,
+        yaxis_title="Magnitude" if view_mode == 'mag' else "Flux",
+        yaxis_autorange='reversed' if view_mode == 'mag' else True,
+        margin=dict(l=40, r=40, t=20, b=40),
+        template="plotly_white",
+        hovermode=False,
+        dragmode='pan',  # 'zoom',  # Default to selection tool
+        # Optional: Make the selection color distinctive (e.g., gold)
+        # so it's clear when the user switches to the Box tool
+        selectdirection='h',  # Usually we only care about the JD range (horizontal)
+        newshape=dict(line_color='#FFD700', fillcolor='#FFD700', opacity=0.3)
+    )
+
+    # 4. Mark selected intervals if any
+    if intervals_data:
+        for i, interval in enumerate(intervals_data):
+            # interval is [jd_start, jd_end]
+            fig.add_vrect(
+                x0=interval[0], x1=interval[1],
+                fillcolor="green", opacity=0.15,
+                layer="below", line_width=1,
+                line_color="green",
+                annotation_text=f"{i + 1}",
+                annotation_position="top left"
+            )
+
+    return fig
+
+
+# ------- graph interval selection
+
+@app.callback(
+    # region infold
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input('btn-add-interval', 'n_clicks'),
+    State('prep-graph', 'selectedData'),
+    State('store-intervals-data', 'data'),
+    State('folding-switch', 'value'),  # We need to know if we are in Phase or JD!
+    prevent_initial_call=True
+    # endregion
+)
+def add_selection_to_registry(n_clicks, selected_data, current_intervals, folding_on):
+    if not n_clicks or not selected_data:
+        return dash.no_update
+
+    # 1. Extract the X-range from the selection
+    # SelectedData contains 'range': {'x': [min, max]}
+    if 'range' in selected_data:
+        x_min, x_max = selected_data['range']['x']
+
+        # BETA-TESTER WARNING:
+        # If folding is ON, x_min/max are PHASES (0-1).
+        # If folding is OFF, they are JD.
+        # For now, let's assume the user selects in JD (unfolded) mode.
+        if folding_on:
+            # We might want to warn the user or handle phase-to-jd conversion later
+            return dash.no_update
+
+            # 2. Append to our list
+        new_interval = [round(x_min, 6), round(x_max, 6)]
+
+        # current_intervals is usually a list of lists: [[start1, end1], [start2, end2]]
+        updated_list = current_intervals if current_intervals else []
+
+        # Prevent exact duplicates
+        if new_interval not in updated_list:
+            updated_list.append(new_interval)
+            # Sort by JD start time
+            updated_list.sort(key=lambda x: x[0])
+
+        return updated_list
+
+    return dash.no_update
+
+
+# ------- interval registry stuff ----
+
+@app.callback(
+    Output('registry-list-container', 'children'),
+    Input('store-intervals-data', 'data')
+)
+def render_registry(intervals):
+    if not intervals:
+        return html.P("No intervals selected.", className="text-muted small italic")
+
+    cards = []
+    for i, interval in enumerate(intervals):
+        cards.append(
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            # html.Small(f"Interval {i+1}", className="text-muted d-block"),
+                            html.B(f"{interval[0]}", className="small"),
+                            html.Span(" → ", className="mx-1"),
+                            html.B(f"{interval[1]}", className="small"),
+                        ], width=9),
+                        dbc.Col([
+                            dbc.Button(
+                                html.I(className="bi bi-trash"),
+                                id={'type': 'del-int', 'index': i},
+                                color="danger", size="sm", outline=True,
+                                title="Delete"
+                            )
+                        ], width=3, className="text-end")
+                    ], className="align-items-center")
+                ], className="p-2")
+            ], className="mb-2 shadow-sm")
+        )
+    return cards
+
+
+# --------  Delete individual interval ----------
+
+@app.callback(
+    # region unfold
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input({'type': 'del-int', 'index': ALL}, 'n_clicks'),
+    State('store-intervals-data', 'data'),
+    prevent_initial_call=True
+    # endregion
+)
+def delete_interval(n_clicks_list, current_intervals):
+    # Check if any button was actually clicked
+    if not any(n_clicks_list):
+        return dash.no_update
+
+    # Find which button index was triggered
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    # Extract the index from the triggered ID string
+    # e.g., '{"index":2,"type":"del-int"}.n_clicks' -> 2
+    import json
+    triggered_id = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])
+    idx_to_remove = triggered_id['index']
+
+    # Remove the item and return the new list
+    if current_intervals and idx_to_remove < len(current_intervals):
+        new_list = [item for i, item in enumerate(current_intervals) if i != idx_to_remove]
+        return new_list
+
+    return dash.no_update
+
+
+@app.callback(
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input('btn-clear-intervals', 'n_clicks'),
+    prevent_initial_call=True
+)
+def clear_all_intervals(n_clicks):
+    if n_clicks:
+        return [] # Return empty list to the store
+    return dash.no_update
+
+
+# --------- Download intervals -----
+
+@app.callback(
+    # region infold
+    Output("download-intervals-file", "data"),
+    Input("btn-download-intervals", "n_clicks"),
+    State("store-intervals-data", "data"),
+    State("export-intervals-filename", "value"),
+    prevent_initial_call=True,
+    # endregion
+)
+def download_intervals(n_clicks, intervals, custom_name):
+    if not n_clicks or not intervals:
+        return dash.no_update
+
+    # 1. Create the string content
+    # Format: Start_JD  End_JD
+    content = "# Interval_Start  Interval_End\n"
+    for start, end in intervals:
+        content += f"{start:<20} {end:<20}\n"
+
+    # 2. Use the custom name (fallback to default if empty)
+    export_name = custom_name if custom_name else "my_intervals.dat"
+
+    return dict(content=content, filename=export_name)
+
+
+# @app.callback(
+#     Output('upload-intervals-text', 'children', allow_duplicate=True),
+#     # Input('btn-upload-intervals', 'n_clicks'),
+#     [Input('upload-intervals', 'filename'),         # Case 1: User uploads a file
+#      Input('btn-download-intervals', 'n_clicks')],  # Case 2: User downloads new ones
+#     [State('input-intervals-filename', 'value')],   # The name they typed
+#     prevent_initial_call=True
+# )
+# def update_intervals_label(uploaded_filename, custom_name):
+#     ctx = dash.callback_context
+#
+#     if not ctx.triggered:
+#         return html.Div(['Drag or ', html.A('Select')])
+#
+#     # Determine what triggered the change
+#     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+#
+#     if trigger_id == 'upload-intervals' and uploaded_filename:
+#         # User just uploaded a file - show its name
+#         return html.B(f"Active: {uploaded_filename}", className="text-success")
+#
+#     if trigger_id == 'btn-download-intervals' and n_clicks:
+#         # User just downloaded their work - show the new filename
+#         name = custom_name if custom_name else "intervals_export"
+#         return html.B(f"Active: {name}.intervals", className="text-primary")
+#
+#     return html.Div(['Drag or ', html.A('Select')])
+
+
+# ------ Lightcurve ----
 
 @app.callback(
     # region unfold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),  # Targets the text inside the box
+    # Input('upload-lc-prep', 'contents'),
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),  # Grabs the filename
     prevent_initial_call=True
     # endregion
 )
 def upload_lc(contents, filename):
+    print(f'Uploading {filename}')
     if contents is None:
         return dash.no_update, dash.no_update
     # Decode the upload
@@ -336,7 +842,7 @@ def upload_intervals(contents, filename):
         logging.error(f"Error processing interval file {filename}:")
         logging.error(traceback.format_exc())
 
-        # 2. Terse UI for sidebar with hover details
+        # 2. Terse UI for sidebar_gp with hover details
         # We replace dots/spaces with hyphens for a valid HTML ID
         safe_id = f"err-int-{filename.replace('.', '-').replace(' ', '-')}"
 
@@ -507,7 +1013,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # region unfold me
     Output('graphs-container', 'children', allow_duplicate=True),
     Output('finished-signal', 'children', allow_duplicate=True),  # Final signal
-    Output('store-results-data', 'data'),   # this data will be downloaded by user
+    Output('store-results-data', 'data'),  # this data will be downloaded by user
     Input('run-btn', 'n_clicks'),
     State('store-lc-data', 'data'),
     State('store-intervals-data', 'data'),
@@ -593,7 +1099,9 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, 
                         figure=fig,
                         config={  # type: ignore
                             'displaylogo': False,
-                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d']
+                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d',
+                                                       'select2d',
+                                                       'zoomIn2d', 'zoomOut2d']
                         }
                     ),
                 ], style={"border": "1px solid #eee", "padding": "5px", "borderRadius": "5px"}),
@@ -642,7 +1150,11 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, 
         review_figs.append(dbc.Col([
             html.Div([
                 dbc.Checkbox(id={'type': 'fit-selector', 'index': i}, value=True, label="Keep"),
-                dcc.Graph(figure=res['figure'])  # The saved figure objects
+                dcc.Graph(figure=res['figure'],
+                          config={  # type: ignore
+                              'displaylogo': False,
+                              'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d']
+                          })  # The saved figure objects
             ], className="p-2 border rounded")
         ], width=6))
 
@@ -678,7 +1190,20 @@ def reset_params(n_clicks, ids):
 
 # ---- Download results logic
 
-# Build output filename
+@app.callback(
+    Output('export-intervals-filename', 'value'),
+    Input('upload-lc', 'filename'),
+    prevent_initial_call=True
+)
+def update_intervals_output_filename(filename):
+    if filename:
+        # Strip the old extension and add '_intervals.dat'
+        base = filename.rsplit('.', 1)[0]
+        return f"{base}_intervals.dat"
+    return "results_intervals.dat"
+
+
+# Build GP output filename
 @app.callback(
     Output('export-filename', 'value'),
     Input('upload-lc', 'filename'),
@@ -727,7 +1252,7 @@ def trigger_download(n_clicks, filename_input, selection_mask, results):
     # region unfold me
     Output('final-review-container', 'style'),
     Output('live-graphs-container', 'style'),
-    Input('finished-signal', 'children'),   # this is a swithch-modes-trigger
+    Input('finished-signal', 'children'),  # this is a swithch-modes-trigger
     prevent_initial_call=True
     # endregion
 )
