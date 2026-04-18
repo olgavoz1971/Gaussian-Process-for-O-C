@@ -1,28 +1,277 @@
 # --- Documentation Content ---
+
+# DOC_MARKDOWN = """
+# # Lightcurve Extrema Modeler (Working draft)
+#
+#
+# ## The Core Concept: Non-Parametric Modeling
+# Unlike traditional fitting, which assumes a fixed shape (like a parabola), this tool treats the lightcurve
+# as a **stochastic process**. Specifically, we assume that our observations are realizations of
+# a **Gaussian Process (GP)**.
+#
+# In the language of **sklearn.gaussian_process**, we are performing Bayesian inference in a function space.
+# We don't ask "What are the parameters of this curve?", but rather "Which smooth functions are most likely
+# to have generated these data points?"
+#
+# ## Why Gaussian Processes (GP)?
+# When you have noisy time-series with gaps and asymmetrical details, GP is often superior
+# to polynomials or splines because:
+# * Gap-Resilient: It models the signal's covariance, avoiding artifacts in areas of uneven cadence or gaps.
+# * Shape-Flexible: As a non-parametric tool, it captures rapid changes and asymmetries without
+# the rigidity of fixed equations.
+# * Noise-Aware: It separates observational jitter from the real signal, preventing outliers from biasing the fit.
+#
+# ---
+#
+# ## GP Parameters: Mathematical Meaning and Intuition
+#
+# The "behavior" of the GP is governed by the **Kernel** (the covariance function). We utilize a composite kernel:
+# `Constant * Matern(nu=2.5) + WhiteKernel`.
+#
+# ### 1. RBF / Matern Length Scale (ℓ) * **Strong Term:** The *characteristic length scale* of the covariance. *
+# **Intuition:** This is the "stiffness" of your curve. * **Small (ℓ):** The GP is very flexible and "wiggly." It
+# will follow every small data bump. * **Large (ℓ):** The GP becomes stiff and smooth. * **Tweak Advice:** If the
+# fit is "overshooting" or missing the peak by being too flat, **decrease** the maximum bound of the length scale. If
+# it is fitting the noise (jitter) instead of the signal, **increase** the minimum bound.
+#
+# ### 2. White Noise Level (σ²_noise)
+# * **Strong Term:** The *nugget effect* or the diagonal of the covariance matrix.
+# * **Intuition:** This represents the photometric "floor" of your noise. It accounts for the fact that data points
+# don't lie perfectly on a smooth line.
+# * **Tweak Advice:** If the GP mean ignores your data points too much, the noise level might be set too high.
+# Use the **Noise Divisor** or **Guess Sigma** to force the GP to trust the data points more.
+#
+# ### 3. Noise Divisor
+# * **Intuition:** This is an empirical scaling factor for your input error bars ($flux\_err$).
+# * **Tweak Advice:** If you suspect your original errors are overestimated (causing the GP to
+# "smooth out" the real peak), increase this divisor to shrink the errors and "tighten" the fit.
+#
+# ## GP Parameters: practical hints:
+# * GUESS_SIGMA
+# Ignore provided flux(magnitude) unceratinties and estimate noise from scatter.
+# Use ON if errors are missing/unreliable. Keep OFF if your uncertainties are trustworthy.
+#
+# * NOISE_SCALE_DIVISOR
+# Empirical correction factor for noise estimated from data (used when GUESS_SIGMA=True).
+# The noise estimate is only rough guess; this parameter lets the user adjust it.
+# Higher values reduce assumed errors → more sensitive, more wiggly fit.
+# Lower values increase assumed errors → smoother, more conservative fit.
+# Typical tuning: increase if the GP is too flat; decrease if it starts fitting noise.
+#
+# * LENGTH_SCALE (MIN/ INIT / MAX)
+# Controls how fast the GP can vary in time (i.e. smoothness).
+# INIT: starting guess; set ~ half of a typical feature width (eclipse, peak).
+# MIN: smallest allowed scale; prevents fitting noise (too small → overfitting).
+# MAX: largest allowed scale; prevents over-smoothing (too large → missed structure).
+# If fit is too wiggly → increase scales. If too smooth → decrease.
+#
+# * WHITE_NOISE_LEVEL (MIN /INIT / MAX)
+# Extra noise the model can add on top of measurement errors.
+# Use to compensate underestimated uncertainties.
+# Higher values → smoother fit (more treated as noise).
+# Lower values → GP tries to follow data more closely.
+# If your flux(mag) uncertainties is reliable, keep these small and tightly bounded.
+#
+# * EXTREMA_MODE
+# Select what to detect:
+# 'min' - minima (eclipses)
+# 'max' - maxima (peaks)
+# Choose according to the feature of interest in the selected interval.
+#
+# ---
+#
+# ## Extremum Times and Uncertainty Estimation
+#
+# How do we find the "Time of Minimum/Maximum" and its error?
+#
+# 1.  **Mean Prediction:** We first find the extremum of the **GP Mean Map**. This is our most probable
+# value JD_extremum.
+# 2.  **Posterior Sampling:** To find the uncertainty, we draw _N_ random functions from
+# the **Posterior Distribution**.
+# 3.  **Distribution Analysis:** For each of these _N_ random "possible lightcurves" we find the peak.
+# The spread (standard deviation) of these peaks gives us our **JD Uncertainty σ_JD**.
+#
+# This method is mathematically superior to simple "error propagation" because it accounts for the entire shape
+# of the probability landscape around the feature.
+#
+# ---
+#
+# ## References
+#
+# * **Pedregosa et al. (2011):** [Scikit-learn: Machine Learning in Python]
+# (https://jmlr.csail.mit.edu/papers/v12/pedregosa11a.html), JMLR 12, pp. 2825-2830. Specifically the `GaussianProcessRegressor` module.
+# * **Rasmussen & Williams (2006):** [Gaussian Processes for Machine Learning]
+# (http://www.gaussianprocess.org/gpml/), MIT Press. (The "Bible" of GPs).
+# """
+
+
 DOC_MARKDOWN = """
-# Lightcurve Extreme Modeler (Working draft)
-## TBD-TBD-TBD-TBD
-## What is this tool?
-This application is designed for the characterization of local features in lightcurves of variable stars.  
-This tool uses Gaussian Process (GP) regression to model the data locally.
 
-## Why Gaussian Processes (GP)?
-Standard polynomial fitting or simple spline interpolation often fails to capture the stochastic nature of stellar 
-variability or can be biased by outliers. 
-* **GP** provides a non-parametric way to model the signal.
-* It provides **formal uncertainty (&sigma;)** for the timing of the extremum.
-* It handles non-uniform sampling (gaps in data) and non-symmetrical features much better than traditional methods.
+# Lightcurve Extrema Modeler
 
-## Workflow
-1. **Preparation:** Upload your lightcurve and define the time intervals where you suspect a feature exists.
-2. **Execution:** The GP engine optimizes hyperparameters for each interval.
-3. **Review:** Visually confirm the fit and download the precise timestamps of the extrema.
+## What this tool does
+This tool models a selected fragment of a light curve and determines the time of a minimum or maximum, together with its uncertainty.
 
-## GP parameters explanation and hints
-TBD-TBD-TBD-TBD...
+Instead of fitting a fixed function (e.g. parabola), it builds a **smooth probabilistic model** of the data using a **Gaussian Process (GP)**.  
+In practice, this means:
+- the model adapts to the actual shape of the light curve,
+- it handles uneven sampling and gaps naturally,
+- it accounts for observational noise.
 
-## Extremum times uncertainties estimation
-TDB-TBD-TBD-TBD
+You can think of it as drawing a smooth curve through the data, while also estimating how uncertain that curve is.
+
+---
+
+## When to use it
+This method is useful when:
+- the extremum is not perfectly symmetric,
+- the data are noisy,
+- there are gaps or irregular cadence,
+- simple polynomial fits give unstable or biased results.
+
+---
+
+## How the model behaves
+The model is controlled by a few parameters that define how “flexible” or “smooth” the curve is, and how much it trusts the data.
+
+Internally, we use a kernel of the form:
+
+`Constant × Matern(ν = 2.5) + White noise`
+
+You do not need to work with this directly — the parameters below are the practical controls.
+
+---
+
+## Parameters
+
+**GUESS_SIGMA**
+Ignore provided uncertainties and estimate noise from data scatter.  
+Use when `flux_err`(`mag_err`) are missing or unreliable.
+
+---
+
+**NOISE_SCALE_DIVISOR**
+Empirical correction for estimated noise (used when `GUESS_SIGMA=True`).  
+The automatic estimate is only approximate — this parameter lets you adjust it.
+
+- Higher → smaller errors → more sensitive (wiggly) fit  
+- Lower → larger errors → smoother fit  
+
+Typical use:
+- Increase if the model is too flat  
+- Decrease if it starts fitting noise
+
+---
+
+**LENGTH_SCALE (MIN / INIT / MAX)**
+Controls how quickly the model can change in time (smoothness).
+
+- *INIT*: initial guess (≈ half of a typical feature width)  
+- *MIN*: prevents fitting very small-scale noise  
+- *MAX*: prevents over-smoothing  
+
+Practical tuning:
+- Too wiggly → increase values  
+- Too smooth → decrease values  
+
+---
+
+**WHITE_NOISE_LEVEL (MIN / INIT / MAX)**
+Additional noise the model can include beyond measurement errors.
+
+Use this if your uncertainties are underestimated.
+
+- Higher → smoother fit  
+- Lower → model follows data more closely  
+
+If your `flux_err` is reliable, keep this small.
+
+---
+
+**EXTREMA_MODE**
+Select what to detect:
+- `min` — minima (eclipses)  
+- `max` — maxima (peaks)
+
+---
+
+## How the extremum and its uncertainty are computed
+
+1. **Best estimate**  
+   The extremum is taken from the smooth model curve (the GP mean).
+
+2. **Uncertainty**  
+   The model generates many possible light curves consistent with the data.  
+   The extremum is measured for each of them.
+
+3. **Final error**  
+   The spread of these extrema gives the uncertainty in time.
+
+This approach naturally accounts for noise, sampling, and shape of the feature.
+
+---
+## If you are curious how it works
+
+### What is a Gaussian Process
+
+A Gaussian Process (GP) is a way to describe **a whole family of possible curves** that could pass 
+through your data. (It does not fit the data with a Gaussian-shaped function; 
+the term Gaussian there refers to the use of the normal distribution).
+
+Instead of choosing a fixed formula (parabola, spline, etc.), we assume:
+> “The true lightcurve is one of many smooth functions consistent with the observations.”
+
+The model does not try to find *the* curve.  
+It assigns a **probability to every possible curve**, favouring those that:
+- pass near the data points,
+- remain reasonably smooth,
+- respect the assumed noise level.
+
+---
+
+### Why “Gaussian”?
+The term *Gaussian* refers to how uncertainties are described.
+
+For any set of time points, the model assumes that the flux values follow a **multivariate normal distribution**.  
+In simpler terms:
+- each point has an uncertainty,
+- nearby points are **correlated** (they tend to vary together),
+- this correlation is described in a mathematically convenient way.
+
+This assumption makes the problem tractable and stable, while still being flexible enough for real light curves.
+
+---
+
+### What is actually being modeled?
+The key idea is not the curve itself, but **how points are related to each other**.
+
+We define:
+- how strongly two observations are connected depending on their time separation,
+- how smooth the curve should be,
+- how much noise is present.
+
+From this, the GP builds a smooth curve that:
+- follows large-scale structure,
+- ignores random scatter,
+- adapts to asymmetry and irregular sampling.
+
+The result is:
+- a most probable curve (the mean),
+- and a full description of uncertainty around it.
+
+---
+
+### Implementation
+This tool uses the `GaussianProcessRegressor` from the  
+`sklearn.gaussian_process` module in Python.
+
+---
+
+## References
+- **Pedregosa et al. (2011):** [Scikit-learn: Machine Learning in Python]
+(https://jmlr.csail.mit.edu/papers/v12/pedregosa11a.html), JMLR 12, pp. 2825-2830. Specifically the `GaussianProcessRegressor` module.
+- **Rasmussen & Williams (2006):** [Gaussian Processes for Machine Learning]
+(http://www.gaussianprocess.org/gpml/), MIT Press. (The "Bible" of GPs).
 """
 
 import dash
@@ -87,44 +336,44 @@ def create_float_input(label, default_val, tooltip_text, index, step=1.0):
     ], className="mb-2")
 
 
-def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict, step=0.001):
-    """
-    Creates a grouped set of 3 inputs (Min, Init, Max) with a common header.
-    - prefix: the base string for the dictionary keys (e.g., 'white_noise_level')
-    - defaults: the params_float dictionary
-    """
-    return html.Div([
-        # Main Category Label with Tooltip
-        html.Div([
-            html.B(main_label, id=f"triple-label-{prefix}", style={"cursor": "help"}),
-            dbc.Tooltip(main_tooltip, target=f"triple-label-{prefix}"),
-        ], className="mt-3 mb-1"),
-
-        # Row of 3 inputs
-        dbc.Row([
-            # MIN
-            dbc.Col([
-                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_min"},
-                          type="number", value=defaults[f"{prefix}_min"], step=step, size="sm"),
-                html.Small("Min", className="text-muted d-block text-center")
-            ], width=4, className="pe-1"),
-
-            # INIT
-            dbc.Col([
-                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_init"},
-                          type="number", value=defaults[f"{prefix}_init"], step=step, size="sm",
-                          style={"border-color": "#007bff"}),  # Highlight initial guess
-                html.Small("Init", className="text-muted d-block text-center")
-            ], width=4, className="px-1"),
-
-            # MAX
-            dbc.Col([
-                dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_max"},
-                          type="number", value=defaults[f"{prefix}_max"], step=step, size="sm"),
-                html.Small("Max", className="text-muted d-block text-center")
-            ], width=4, className="ps-1"),
-        ], className="g-0")  # No gutters for maximum compactness
-    ], className="mb-2 p-2 border-bottom")
+# def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict, step=0.001):
+#     """
+#     Creates a grouped set of 3 inputs (Min, Init, Max) with a common header.
+#     - prefix: the base string for the dictionary keys (e.g., 'white_noise_level')
+#     - defaults: the params_float dictionary
+#     """
+#     return html.Div([
+#         # Main Category Label with Tooltip
+#         html.Div([
+#             html.B(main_label, id=f"triple-label-{prefix}", style={"cursor": "help"}),
+#             dbc.Tooltip(main_tooltip, target=f"triple-label-{prefix}"),
+#         ], className="mt-3 mb-1"),
+#
+#         # Row of 3 inputs
+#         dbc.Row([
+#             # MIN
+#             dbc.Col([
+#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_min"},
+#                           type="number", value=defaults[f"{prefix}_min"], step=step, size="sm"),
+#                 html.Small("Min", className="text-muted d-block text-center")
+#             ], width=4, className="pe-1"),
+#
+#             # INIT
+#             dbc.Col([
+#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_init"},
+#                           type="number", value=defaults[f"{prefix}_init"], step=step, size="sm",
+#                           style={"border-color": "#007bff"}),  # Highlight initial guess
+#                 html.Small("Init", className="text-muted d-block text-center")
+#             ], width=4, className="px-1"),
+#
+#             # MAX
+#             dbc.Col([
+#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_max"},
+#                           type="number", value=defaults[f"{prefix}_max"], step=step, size="sm"),
+#                 html.Small("Max", className="text-muted d-block text-center")
+#             ], width=4, className="ps-1"),
+#         ], className="g-0")  # No gutters for maximum compactness
+#     ], className="mb-2 p-2 border-bottom")
 
 
 def LegendItem(color, label, mode='line'):
@@ -169,7 +418,8 @@ def LegendItem(color, label, mode='line'):
 
 sidebar_lc = html.Div([
     # 1. PHASE FOLDING CONTROLS
-    html.Label("Phase Folding", className="fw-bold"),
+    html.Label("Phase Folding", className="fw-bold", id='phase-folding-label'),
+    dbc.Tooltip('Out of operation', target="phase-folding-label"),
     dbc.Checklist(
         options=[{"label": "Fold", "value": 1}],  # type: ignore
         value=[],
@@ -189,7 +439,8 @@ sidebar_lc = html.Div([
     html.Hr(),
 
     # 2. VIEW SETTINGS
-    html.Label("View Settings", className="fw-bold"),
+    html.Label("View Settings", className="fw-bold", id="view-settings-label"),
+    dbc.Tooltip('Out of operation', target="view-settings-label"),
     dbc.RadioItems(
         options=[  # type: ignore
             {"label": "Magnitudes", "value": "mag"},
@@ -206,9 +457,10 @@ sidebar_lc = html.Div([
     #  3. ACTION BUTTONS
     html.Label("Interval control", className="fw-bold"),
     dbc.Button(
-        [html.I(className="bi bi-plus-circle me-2"), "Add Selection"],
+        [html.I(className="bi bi-plus-circle me-2"), "Add Interval"],
         id="btn-add-interval", color="primary", className="w-100 mb-2"
     ),
+    dbc.Tooltip('Register selected JD interval as a target for extremum analysis', target="btn-add-interval"),
     # CLEAR button
     dbc.Button(
         [html.I(className="bi bi-trash3 me-2"), "Clear All Intervals"],
@@ -220,16 +472,16 @@ sidebar_lc = html.Div([
 
     # 4. --- EXPORT ---
     html.Label("Export Settings", className="fw-bold"),
-    dbc.InputGroup([
-        dbc.InputGroupText("Filename"),
-        dbc.Input(
-            id="export-intervals-filename",
-            placeholder="intervals_export",
-            type="text",
-            value="my_intervals"    # Default value
-        ),
-        # dbc.InputGroupText(".intervals"),
-    ], size="sm", className="mb-2"),
+    # dbc.InputGroup([
+    #     dbc.InputGroupText("Filename"),
+    dbc.Input(
+        id="export-intervals-filename",
+        placeholder="intervals_export",
+        type="text",
+        value="my_intervals"  # Default value
+    ),
+    # dbc.InputGroupText(".intervals"),
+    # ], size="sm", className="mb-2"),
 
     # DOWNLOAD button
     dbc.Button(
@@ -247,6 +499,7 @@ graph_lc = html.Div([
         id='prep-graph',
         config={  # type: ignore
             'scrollZoom': True,
+            'displaylogo': False,
             'modeBarButtonsToRemove': [
                 'zoomIn2d',  # Hide Zoom In
                 'zoomOut2d',  # Hide Zoom Out
@@ -254,8 +507,10 @@ graph_lc = html.Div([
                 # 'select2d'  # Hide the default box-select (if you only want 'drawrect')
             ],
             'modeBarButtonsToAdd': ['drawrect', 'eraseshape'],
-            'displaylogo': False
+            # 'showAxisDragHandles': True,
+            # 'showAxisRangeEntryBoxes': True,
         },
+        # responsive=True,  # This tells Plotly to watch the container
         style={'height': '600px'}
     ),
     dbc.Alert(
@@ -272,111 +527,193 @@ intervals_registry = html.Div([
     ])
 ], className="p-3 border rounded bg-light", style={'height': '500px', 'overflowY': 'auto'})
 
+registry_toggle_btn = dbc.Button(
+    # region unfold
+    html.I(className="bi bi-chevron-right", id="registry-toggle-icon"),
+    id="btn-toggle-registry",
+    color="light",
+    size="sm",
+    className="border shadow-sm p-1",
+    style={
+        "position": "absolute", "right": "0", "top": "50%",
+        "zIndex": "1000", "transform": "translateX(50%)",
+        "borderRadius": "50%", "width": "30px", "height": "30px"
+    }
+    # endregion
+)
 # ===================  GP GUI ===========================
 
+
 sidebar_gp = html.Div([
-    # html.H4("Control"),  # , className="display-6"),
-    # html.Hr(),
-    html.H6("Legend"),
-    LegendItem("black", "Data Points", mode='circle'),
-    LegendItem("rgb(31, 119, 180)", "GP Mean", mode='line'),
-    LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ Confidence", mode='line'),
-    LegendItem("magenta", "Peak Estimate & 1σ Range", mode='dashed'),
-    LegendItem("orange", "Posterior Draws", mode='circle'),
-    LegendItem("green", "Guess", mode='dashed'),
-
-    html.Hr(),
-    # Buttons
-    dbc.Stack([
-        dbc.Button("Run GP", id="run-btn", color="primary", n_clicks=0),
-        dbc.Button("Cancel", id="cancel-btn", color="danger", outline=True, n_clicks=0),
-    ], direction="horizontal", gap=2),
-
-    # File Selectors
-    # dbc.Label("lightcurve:"),
-    # dcc.Upload(id='upload-lc',
-    #            children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
-    #            style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
-
-    # dbc.Label("intervals:", className="mt-3"),
-    # dcc.Upload(id='upload-intervals',
-    #            children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
-    #            style={'border': '1px dashed', 'padding': '5px', 'textAlign': 'center'}),
-
-    html.Hr(),
-    dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="mt-3"),
-
-    # Unpaired parameter:
-    create_float_input(
-        label="Noise Divisor",
-        default_val=params_float["noise_scale_divisor"],
-        tooltip_text="Scaling factor for assumed errors.",
-        index="noise_scale_divisor"
+    # 1. COLLAPSIBLE LEGEND
+    dbc.Button(
+        "Show Legend",
+        id="toggle-legend-btn",
+        color="link",
+        # size="sm",
+        className="p-0 mb-2 text-decoration-none"
     ),
-    # 2. White Noise Triple
-    create_parameter_triple(
-        main_label="White Kernel Bounds",
-        main_tooltip="Bounds and initial guess for the WhiteNoise kernel level.",
-        prefix="white_noise_level",
-        defaults=params_float,
-        step=0.001
-    ),
-    # 3. Length Scale Triple (Assuming you add 'length_scale_min/max' to your dict)
-    create_parameter_triple(
-        main_label="RBF Length Scale",
-        main_tooltip="Smoothness control. Small = wiggly, Large = smooth.",
-        prefix="length_scale",
-        defaults=params_float
+    dbc.Collapse(
+        html.Div([
+            LegendItem("black", "Data Points", mode='circle'),
+            LegendItem("rgb(31, 119, 180)", "GP Mean", mode='line'),
+            LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ Confidence", mode='line'),
+            LegendItem("magenta", "Peak Estimate", mode='dashed'),
+            LegendItem("orange", "Posterior Draws", mode='circle'),
+            LegendItem("green", "Guess", mode='dashed'),
+        ], className="p-2 border rounded bg-white mb-3 small"),
+        id="legend-collapse",
+        is_open=False
     ),
 
-    html.Div([
-        dbc.Checkbox(id="guess-sigma", value=GUESS_SIGMA, className="form-check-input"),
-        dbc.Label("Guess sigma", html_for="guess-sigma", id="guess-sigma-label", className="ms-2"),
-        dbc.Tooltip("Check this to ignore provided errors and estimate them from data scatter",
-                    target="guess-sigma-label"),
-    ], className="mt-3 mb-3"),
+    # 2. PRIMARY ACTION BUTTONS
+    dbc.Row([
+        dbc.Col(dbc.Button("Run GP", id="run-btn", color="primary", className="w-100"), width=7),
+        dbc.Col(dbc.Button("Cancel", id="cancel-btn", color="danger", outline=True, className="w-100"), width=5),
+    ], className="g-2 mb-3"),
 
-    # ], style={"padding": "2rem", "backgroundColor": "#f8f9fa", "height": "100vh"})
-], style={"padding": "10px"})
+    # 3. GLOBAL MODEL SETTINGS
+    dbc.Row([
+        dbc.Col([
+            dbc.Select(
+                id="extrema-mode",
+                options=[  # type: ignore
+                    {"label": "Search Minima", "value": "min"},
+                    {"label": "Search Maxima", "value": "max"},
+                ],
+                value="max",
+                size="sm",
+            )
+        ], width=12),
 
-# Output Panel (Graphs in a Grid)
+    ], className="g-2 mb-2"),
+
+    dbc.Row([
+        dbc.Col([html.Label("Guess sigma", className="small fw-bold",
+                            id='guess-sigma-label')], width=6),
+        dbc.Col([html.Label("Noise divisor", className="small fw-bold",
+                            id='noise-divisor-label')], width=6),
+        dbc.Tooltip("Empirical noise correction (↑ wiggly, ↓ smooth)", target='noise-divisor-label'),
+        dbc.Tooltip("Auto-estimate noise (ignore provided uncertainties)", target='guess-sigma-label')
+    ]),
+
+    dbc.Row([
+        dbc.Col([
+            dbc.Checkbox(id="guess-sigma", value=GUESS_SIGMA, className="form-check-input"),
+            dbc.Label("", html_for="guess-sigma", className="small ms-2"),
+        ], width=6, className="d-flex align-items-center mb-3"),
+        dbc.Col([
+            dbc.Input(
+                id={"type": "float-input", "index": "noise_scale_divisor"},
+                type="number", size="sm", step=0.1,
+                value=params_float["noise_scale_divisor"]
+            ),
+            # dbc.Tooltip("Noise Divisor", target={"type": "float-input", "index": "noise_scale_divisor"})
+        ], width=6),
+    ]),
+
+    html.Hr(className="my-2"),
+
+    # 4. KERNEL PARAMETERS (Compact Triples)
+    html.Label("White Kernel (Min / Val /  Max)", className="small fw-bold", id='wk-label'),
+    dbc.Tooltip("Extra noise allowance", target='wk-label'),
+    dbc.Row([
+        dbc.Col(dbc.Input(
+            id={'type': 'float-input', 'index': "white_noise_level_min"},
+            size="sm",
+            type="number", step=0.001,
+            value=params_float["white_noise_level_min"]), width=4),
+        dbc.Col(dbc.Input(
+            id={'type': 'float-input', 'index': "white_noise_level_init"},
+            size="sm",
+            type="number", step=0.001,
+            value=params_float["white_noise_level_init"]), width=4),
+        dbc.Col(dbc.Input(
+            id={'type': 'float-input', 'index': "white_noise_level_max"},
+            size="sm",
+            type="number", step=0.001,
+            value=params_float["white_noise_level_max"]), width=4),
+    ]),
+
+    html.Label("Length Scale ( Min / Val / Max)", className="small fw-bold", id='ls-label'),
+    dbc.Tooltip("GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
+                "decrease if it misses structure.", target='ls-label'),
+    dbc.Row([
+        dbc.Col(dbc.Input(
+            id={'type': 'float-input', 'index': "length_scale_min"},
+            size="sm",
+            type="number", step=0.001,
+            value=params_float["length_scale_min"]), width=4),
+        dbc.Col(dbc.Input(
+            size="sm",
+            id={'type': 'float-input', 'index': "length_scale_init"},
+            type="number", step=0.001,
+            value=params_float["length_scale_init"]), width=4),
+        dbc.Col(dbc.Input(
+            size="sm",
+            id={'type': 'float-input', 'index': "length_scale_max"},
+            type="number", step=0.001,
+            value=params_float["length_scale_max"]), width=4),
+    ], className="g-1 mb-3"),
+
+    dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="w-100 mt-2"),
+
+], className="p-3 bg-light border rounded shadow-sm")
+
+
+# =====================  LAYOUT ==================================================
 graph_gp = html.Div([
-    html.Div(id='finished-signal', style={'display': 'none'}),  # just as a switch-modes-trigger
-    html.H4("Results: Normalised flux vs JD"),
+    html.Div(id='finished-signal', style={'display': 'none'}),
+    # signal for gp status, Allowed: "WAITING" and "FINISHED"
+
+    # 1. DYNAMIC HEADER: Changes based on state
+    html.Div(id='gp-header-area', children=[
+        html.Div([
+            html.H5("GP Processing View", className="fw-bold mb-0"),
+            dbc.Badge("Waiting for Run", color="secondary", id='gp-view-badge', className="ms-2")
+        ], className="d-flex align-items-center mb-3")
+    ]),
+
     # 1. LIVE VIEW: Shows only graphs, no interactivity
     dbc.Row(id='live-graphs-container', style={'display': 'flex'}, className="g-2"),
 
-    # 2. FINAL REVIEW: Initially hidden, contains checkboxes + Save button
+    # 3. FINAL REVIEW
     html.Div(id='final-review-container', style={'display': 'none'}, children=[
-        html.Hr(),
-        html.H4("Review and Export"),
-        dbc.Row([
-            dbc.Col(dbc.Button("Select All", id="select-all-btn", size="sm"), width="auto"),
-            dbc.Col(dbc.Button("Unselect All", id="unselect-all-btn", size="sm"), width="auto"),
-            dbc.Col([
-                dbc.InputGroup([
-                    dbc.InputGroupText("Filename"),
-                    dbc.Input(id="export-filename", placeholder="Enter filename...", type="text"),
-                ])
-            ], width=4),
-            # dbc.Col(dbc.Input(id="export-filename", placeholder="filename.dat"), width=3),
-            dbc.Col(dbc.Button("Download Selected", id="save-file-btn", color="success"), width="auto"),
-        ], className="mb-3 g-2 align-items-center"),
+        html.Hr(className="my-4"),
+        dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col(html.H6("Review and Export", className="mb-0 fw-bold"), width="auto"),
+                    dbc.Col(dbc.Button("Select All", id="select-all-btn", size="sm", color="link"), width="auto"),
+                    dbc.Col(dbc.Button("Unselect All", id="unselect-all-btn", size="sm", color="link"), width="auto"),
+
+                    # Compact Filename + Download Group
+                    dbc.Col([
+                        dbc.InputGroup([
+                            dbc.Input(id="export-filename", placeholder="results.dat", type="text", size="sm"),
+                            dbc.Button([html.I(className="bi bi-download me-2"), "Download"],
+                                       id="save-file-btn", color="success", size="sm"),
+                        ], className="ms-auto", style={"width": "350px"})
+                    ], width="auto", className="ms-auto"),
+                ], className="align-items-center"),
+            ], className="py-2")  # Thinner padding
+        ], className="bg-light mb-3"),
+
         dbc.Row(id='graphs-container', className="g-2"),
     ]),
+
     dcc.Download(id="download-results"),
     dcc.Store(id='store-results-data')
-], style={"padding": "2rem"})
+], className="p-2")
 
-# =====================  LAYOUT ==================================================
 
 app.layout = dbc.Container([
     # --- HEADER SECTION ---
     dbc.Row([
         dbc.Col([
             # html.H1("Astro-GP", className="display-4 text-primary mb-0"),
-            # html.P("Lightcurves Extreme Modeler", className="lead text-muted")
-            html.H1("Lightcurve Extreme Modeler (working draft")  # , className="display-4 text-primary mb-0")
+            # html.P("Lightcurves Extrema Modeler", className="lead text-muted")
+            html.H1("Lightcurve Extrema Modeler (working draft)")  # , className="display-4 text-primary mb-0")
         ], width="auto"),
         dbc.Col(
             dbc.Button([html.I(className="bi bi-question-circle me-2"), "About"],
@@ -393,12 +730,13 @@ app.layout = dbc.Container([
             style={"maxHeight": "75vh", "overflowY": "auto"}
         ),
         dbc.ModalFooter(
-            dbc.Button("Thanks", id="close-help", className="ms-auto", n_clicks=0)
+            dbc.Button("Stop talking!", id="close-help", className="ms-auto", n_clicks=0)
         ),
     ], id="help-modal", size="xl", is_open=False),
 
     dcc.Store(id='store-lc-data'),
     dcc.Store(id='store-intervals-data'),
+    dcc.Store(id='store-active-intervals-name', data="Drag or Select"),
 
     # --- 2. GLOBAL DATA HUB
 
@@ -415,7 +753,6 @@ app.layout = dbc.Container([
                         className="upload-box",  # We style this in the local style.css
                         style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px', 'textAlign': 'center'},
                     ),
-                    # html.Div(id='lc-status-msg', className="small mt-1")
                 ], width=6),
 
                 # Intervals Upload
@@ -426,13 +763,7 @@ app.layout = dbc.Container([
                         children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
                         className="upload-box",  # We style this in the local style.css
                         style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px', 'textAlign': 'center'},
-                        # style={
-                        #     'width': '100%', 'height': '50px', 'lineHeight': '50px',
-                        #     'borderWidth': '1px', 'borderStyle': 'dashed',
-                        #     'borderRadius': '5px', 'textAlign': 'center'
-                        # }
                     ),
-                    html.Div(id='int-status-msg', className="small mt-1")
                 ], width=6),
 
                 # # Global Summary Metrics
@@ -454,15 +785,52 @@ app.layout = dbc.Container([
             title="Lightcurve and Intervals",
             children=[
                 dbc.Row([
+                    # Sidebar (Column 1 - Fixed)
                     dbc.Col(sidebar_lc, width=3),
-                    dbc.Col(graph_lc, width=6),
-                    dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
 
+                    # Working Area (Column 2 & 3 combined into a Flex container)
+                    dbc.Col([
+                        html.Div([
+                            # Graph Area (Grows automatically)
+                            html.Div([
+                                graph_lc,
+                                registry_toggle_btn
+                            ],
+                                style={
+                                "flex": "1",
+                                "minWidth": "0",
+                                "position": "relative",
+                                "transition": "none",  # Kill the animation for instant speed
+                                # "transition": "flex 0.3s ease"
+                            } ),
+
+                            # Registry Area (Collapses horizontally)
+                            dbc.Collapse(
+                                intervals_registry,
+                                id="registry-collapse",
+                                is_open=True,
+                                dimension="width",
+                                style={
+                                    # "transition": "0.3s ease",
+                                    "transition": "none",  # Kill the animation for instant speed
+                                    "flexShrink": "0",
+                                    # "minWidth": "0px"
+                                }
+                            )
+                        ], style={
+                            "display": "flex",
+                            "flexDirection": "row",
+                            "flexWrap": "nowrap",
+                            "overflow": "hidden",
+                            "alignItems": "stretch"
+                        })
+                    ], width=9)
+                    # dbc.Col(graph_lc, width=6),
+                    # dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
                 ]),
-            ],
-        ),
+            ]),
 
-        # --- EXISTING STEP 2: ANALYSIS (The "Monster") ---
+        # --- STEP 2: ANALYSIS (The "Monster") ---
         dbc.AccordionItem(
             item_id="accordion-gp",
             title="Gaussian Process",
@@ -475,7 +843,6 @@ app.layout = dbc.Container([
             ],
         ),
     ], id="main-workflow-accordion", active_item="accordion-lc"),
-
 ], fluid=True)
 
 
@@ -494,8 +861,41 @@ def toggle_modal(n1, n2, is_open):
     return is_open
 
 
-# ------ lightcurve visualisation -------
+# --- Open/Close registry
+@app.callback(
+    # region unfold
+    Output("registry-collapse", "is_open"),
+    Output("registry-toggle-icon", "className"),
+    Input("btn-toggle-registry", "n_clicks"),
+    State("registry-collapse", "is_open"),
+    prevent_initial_call=True
+    # endregion
+)
+def toggle_registry(n_clicks, is_open):
+    if is_open:
+        # Closing: return is_open=False and the Left arrow icon
+        return False, "bi bi-chevron-left"
+    else:
+        # Opening: return is_open=True and the Right arrow icon
+        return True, "bi bi-chevron-right"
 
+
+@app.callback(
+    # region unfold
+    Output("legend-collapse", "is_open"),
+    Output("toggle-legend-btn", "children"),
+    Input("toggle-legend-btn", "n_clicks"),
+    State("legend-collapse", "is_open"),
+    prevent_initial_call=True
+    # endregion
+)
+def toggle_gp_legend(n_clicks, is_open):
+    if is_open:
+        return False, "Show Legend"
+    return True, "Hide Legend"
+
+
+# ------ lightcurve visualisation -------
 @app.callback(
     # region unfold
     Output('prep-graph', 'figure'),
@@ -542,14 +942,46 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
         xaxis_title=x_label,
         yaxis_title="Magnitude" if view_mode == 'mag' else "Flux",
         yaxis_autorange='reversed' if view_mode == 'mag' else True,
-        margin=dict(l=40, r=40, t=20, b=40),
+        margin=dict(l=10, r=10, t=20, b=40),
         template="plotly_white",
         hovermode=False,
         dragmode='pan',  # 'zoom',  # Default to selection tool
         # Optional: Make the selection color distinctive (e.g., gold)
         # so it's clear when the user switches to the Box tool
         selectdirection='h',  # Usually we only care about the JD range (horizontal)
-        newshape=dict(line_color='#FFD700', fillcolor='#FFD700', opacity=0.3)
+        # newshape=dict(line_color='#FFD700', fillcolor='#FFD700', opacity=0.3),
+        # This controls BOTH drawline and drawrect
+        newshape=dict(
+            line_color='red',  # Much easier to see than yellow
+            line_width=3,
+            opacity=0.5,
+            # drawdirection='horizontal'      # Helps keep the ruler straight if you only want JD
+        ),
+        # THE RULER SETTING: This enables the pop-up labels for distance
+        # modebar=dict(
+        #     addcategory='drawlabel'     # Some versions of Plotly use this to force labels
+        # ),
+        # xaxis=dict(
+        #     showspikes=True,  # Show the vertical line
+        #     spikemode='across',
+        #     spikesnap='cursor',
+        #     spikethickness=1,
+        #     spikedash='dash',
+        #     spikecolor='grey'
+        # ),
+        # yaxis=dict(
+        #     showspikes=True,  # Show the horizontal line
+        #     spikemode='across',
+        #     spikesnap='cursor',
+        #     spikethickness=1,
+        #     spikedash='dash',
+        #     spikecolor='grey'
+        # ),
+        # hovermode='x',
+        # modebar=dict(
+        #     orientation='h',
+        #     bgcolor='rgba(255,255,255,0.7)'
+        # )
     )
 
     # 4. Mark selected intervals if any
@@ -561,195 +993,11 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
                 fillcolor="green", opacity=0.15,
                 layer="below", line_width=1,
                 line_color="green",
-                annotation_text=f"{i + 1}",
-                annotation_position="top left"
+                # annotation_text=f"{i + 1}",
+                # annotation_position="top left"
             )
 
     return fig
-
-
-# ------- graph interval selection
-
-@app.callback(
-    # region infold
-    Output('store-intervals-data', 'data', allow_duplicate=True),
-    Input('btn-add-interval', 'n_clicks'),
-    State('prep-graph', 'selectedData'),
-    State('store-intervals-data', 'data'),
-    State('folding-switch', 'value'),  # We need to know if we are in Phase or JD!
-    prevent_initial_call=True
-    # endregion
-)
-def add_selection_to_registry(n_clicks, selected_data, current_intervals, folding_on):
-    if not n_clicks or not selected_data:
-        return dash.no_update
-
-    # 1. Extract the X-range from the selection
-    # SelectedData contains 'range': {'x': [min, max]}
-    if 'range' in selected_data:
-        x_min, x_max = selected_data['range']['x']
-
-        # BETA-TESTER WARNING:
-        # If folding is ON, x_min/max are PHASES (0-1).
-        # If folding is OFF, they are JD.
-        # For now, let's assume the user selects in JD (unfolded) mode.
-        if folding_on:
-            # We might want to warn the user or handle phase-to-jd conversion later
-            return dash.no_update
-
-            # 2. Append to our list
-        new_interval = [round(x_min, 6), round(x_max, 6)]
-
-        # current_intervals is usually a list of lists: [[start1, end1], [start2, end2]]
-        updated_list = current_intervals if current_intervals else []
-
-        # Prevent exact duplicates
-        if new_interval not in updated_list:
-            updated_list.append(new_interval)
-            # Sort by JD start time
-            updated_list.sort(key=lambda x: x[0])
-
-        return updated_list
-
-    return dash.no_update
-
-
-# ------- interval registry stuff ----
-
-@app.callback(
-    Output('registry-list-container', 'children'),
-    Input('store-intervals-data', 'data')
-)
-def render_registry(intervals):
-    if not intervals:
-        return html.P("No intervals selected.", className="text-muted small italic")
-
-    cards = []
-    for i, interval in enumerate(intervals):
-        cards.append(
-            dbc.Card([
-                dbc.CardBody([
-                    dbc.Row([
-                        dbc.Col([
-                            # html.Small(f"Interval {i+1}", className="text-muted d-block"),
-                            html.B(f"{interval[0]}", className="small"),
-                            html.Span(" → ", className="mx-1"),
-                            html.B(f"{interval[1]}", className="small"),
-                        ], width=9),
-                        dbc.Col([
-                            dbc.Button(
-                                html.I(className="bi bi-trash"),
-                                id={'type': 'del-int', 'index': i},
-                                color="danger", size="sm", outline=True,
-                                title="Delete"
-                            )
-                        ], width=3, className="text-end")
-                    ], className="align-items-center")
-                ], className="p-2")
-            ], className="mb-2 shadow-sm")
-        )
-    return cards
-
-
-# --------  Delete individual interval ----------
-
-@app.callback(
-    # region unfold
-    Output('store-intervals-data', 'data', allow_duplicate=True),
-    Input({'type': 'del-int', 'index': ALL}, 'n_clicks'),
-    State('store-intervals-data', 'data'),
-    prevent_initial_call=True
-    # endregion
-)
-def delete_interval(n_clicks_list, current_intervals):
-    # Check if any button was actually clicked
-    if not any(n_clicks_list):
-        return dash.no_update
-
-    # Find which button index was triggered
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return dash.no_update
-
-    # Extract the index from the triggered ID string
-    # e.g., '{"index":2,"type":"del-int"}.n_clicks' -> 2
-    import json
-    triggered_id = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])
-    idx_to_remove = triggered_id['index']
-
-    # Remove the item and return the new list
-    if current_intervals and idx_to_remove < len(current_intervals):
-        new_list = [item for i, item in enumerate(current_intervals) if i != idx_to_remove]
-        return new_list
-
-    return dash.no_update
-
-
-@app.callback(
-    Output('store-intervals-data', 'data', allow_duplicate=True),
-    Input('btn-clear-intervals', 'n_clicks'),
-    prevent_initial_call=True
-)
-def clear_all_intervals(n_clicks):
-    if n_clicks:
-        return [] # Return empty list to the store
-    return dash.no_update
-
-
-# --------- Download intervals -----
-
-@app.callback(
-    # region infold
-    Output("download-intervals-file", "data"),
-    Input("btn-download-intervals", "n_clicks"),
-    State("store-intervals-data", "data"),
-    State("export-intervals-filename", "value"),
-    prevent_initial_call=True,
-    # endregion
-)
-def download_intervals(n_clicks, intervals, custom_name):
-    if not n_clicks or not intervals:
-        return dash.no_update
-
-    # 1. Create the string content
-    # Format: Start_JD  End_JD
-    content = "# Interval_Start  Interval_End\n"
-    for start, end in intervals:
-        content += f"{start:<20} {end:<20}\n"
-
-    # 2. Use the custom name (fallback to default if empty)
-    export_name = custom_name if custom_name else "my_intervals.dat"
-
-    return dict(content=content, filename=export_name)
-
-
-# @app.callback(
-#     Output('upload-intervals-text', 'children', allow_duplicate=True),
-#     # Input('btn-upload-intervals', 'n_clicks'),
-#     [Input('upload-intervals', 'filename'),         # Case 1: User uploads a file
-#      Input('btn-download-intervals', 'n_clicks')],  # Case 2: User downloads new ones
-#     [State('input-intervals-filename', 'value')],   # The name they typed
-#     prevent_initial_call=True
-# )
-# def update_intervals_label(uploaded_filename, custom_name):
-#     ctx = dash.callback_context
-#
-#     if not ctx.triggered:
-#         return html.Div(['Drag or ', html.A('Select')])
-#
-#     # Determine what triggered the change
-#     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-#
-#     if trigger_id == 'upload-intervals' and uploaded_filename:
-#         # User just uploaded a file - show its name
-#         return html.B(f"Active: {uploaded_filename}", className="text-success")
-#
-#     if trigger_id == 'btn-download-intervals' and n_clicks:
-#         # User just downloaded their work - show the new filename
-#         name = custom_name if custom_name else "intervals_export"
-#         return html.B(f"Active: {name}.intervals", className="text-primary")
-#
-#     return html.Div(['Drag or ', html.A('Select')])
 
 
 # ------ Lightcurve ----
@@ -811,11 +1059,28 @@ def upload_lc(contents, filename):
         ])
 
 
-# Callback for Intervals Upload
+# Callbacks for Intervals file upload/download/signs
+
+@app.callback(
+    Output('upload-intervals-text', 'children'),
+    Input('store-active-intervals-name', 'data')
+)
+def update_global_intervals_label(stored_content):
+    if not stored_content:
+        return html.Div(['Drag or ', html.A('Select')])
+
+    return stored_content
+    # return html.Div([
+    #     html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
+    #     html.B(active_name)
+    # ])
+
+
 @app.callback(
     # region unfold me
     Output('store-intervals-data', 'data'),
-    Output('upload-intervals-text', 'children'),
+    Output('store-active-intervals-name', 'data', allow_duplicate=True),
+    # Output('upload-intervals-text', 'children'),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
     prevent_initial_call=True
@@ -831,12 +1096,17 @@ def upload_intervals(contents, filename):
         text = decoded.decode('utf-8', errors='ignore')  # "ignore"  to prevent the whole app
         # from crashing over a single non-ASCII character.
         intervals_list = load_intervals(io.StringIO(text))
-
-        # --- Success UI ---
-        return intervals_list, html.Div([
+        success_ui = html.Div([
             html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
             html.B(filename)
         ])
+        return intervals_list, success_ui
+        # --- Success UI ---
+        # return intervals_list, filename
+        # return intervals_list, html.Div([
+        #     html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
+        #     html.B(filename)
+        # ])
     except Exception as e:
         # 1. Log full traceback for terminal
         logging.error(f"Error processing interval file {filename}:")
@@ -845,21 +1115,30 @@ def upload_intervals(contents, filename):
         # 2. Terse UI for sidebar_gp with hover details
         # We replace dots/spaces with hyphens for a valid HTML ID
         safe_id = f"err-int-{filename.replace('.', '-').replace(' ', '-')}"
-
-        return dash.no_update, html.Div([
+        error_ui = html.Div([
             html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
             html.Span(
                 [html.B("Error: "), filename],
                 id=safe_id,
                 style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
             ),
-            dbc.Tooltip(
-                f"Interval Load Error: {str(e)}",
-                target=safe_id,
-                placement="right",
-                style={"fontSize": "0.75rem"}
-            )
+            dbc.Tooltip(f"Interval Load Error: {str(e)}", target=safe_id)
         ])
+        return dash.no_update, error_ui
+        # return dash.no_update, html.Div([
+        #     html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
+        #     html.Span(
+        #         [html.B("Error: "), filename],
+        #         id=safe_id,
+        #         style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
+        #     ),
+        #     dbc.Tooltip(
+        #         f"Interval Load Error: {str(e)}",
+        #         target=safe_id,
+        #         placement="right",
+        #         style={"fontSize": "0.75rem"}
+        #     )
+        # ])
 
     # content_type, content_string = contents.split(',')
     # decoded = base64.b64decode(content_string)
@@ -868,6 +1147,218 @@ def upload_intervals(contents, filename):
     # text = decoded.decode('utf-8')
     # intervals_list = load_intervals(io.StringIO(text))
     # return intervals_list
+
+
+@app.callback(
+    # region infold
+    Output("download-intervals-file", "data"),
+    Output("store-active-intervals-name", "data"),  # Store the "real" name here
+    Input("btn-download-intervals", "n_clicks"),
+    State("store-intervals-data", "data"),
+    State("export-intervals-filename", "value"),
+    prevent_initial_call=True,
+    # endregion
+)
+def download_intervals(n_clicks, intervals, custom_name):
+    if not n_clicks or not intervals:
+        return dash.no_update, dash.no_update
+
+    # 1. Create the string content
+    # Format: Start_JD  End_JD
+    content = "# Interval_Start  Interval_End\n"
+    for start, end in intervals:
+        content += f"{start:<20} {end:<20}\n"
+
+    # 2. Use the custom name (fallback to default if empty)
+    export_name = custom_name if custom_name else "my_intervals.dat"
+
+    # --- DOWNLOAD SUCCESS UI ---
+    download_ui = html.Div([
+        html.I(className="bi bi-check-circle-fill me-2", style={"color": "#007bff"}),
+        html.B(export_name)
+    ])
+
+    return dict(content=content, filename=export_name), download_ui
+    # return dict(content=content, filename=export_name), export_name
+
+
+@app.callback(
+    # region unfold
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input('btn-clear-intervals', 'n_clicks'),
+    prevent_initial_call=True
+    # endregion
+)
+def clear_all_intervals(n_clicks):
+    if n_clicks:
+        return []  # Return empty list to the store
+    return dash.no_update
+
+
+# ------- graphical interval selection
+@app.callback(
+    # region infold
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input('btn-add-interval', 'n_clicks'),
+    State('prep-graph', 'selectedData'),
+    State('store-intervals-data', 'data'),
+    State('folding-switch', 'value'),  # We need to know if we are in Phase or JD!
+    prevent_initial_call=True
+    # endregion
+)
+def add_selection_to_registry(n_clicks, selected_data, current_intervals, folding_on):
+    if not n_clicks or not selected_data:
+        return dash.no_update
+
+    # 1. Extract the X-range from the selection
+    # SelectedData contains 'range': {'x': [min, max]}
+    if 'range' in selected_data:
+        x_min, x_max = selected_data['range']['x']
+
+        # BETA-TESTER WARNING:
+        # If folding is ON, x_min/max are PHASES (0-1).
+        # If folding is OFF, they are JD.
+        # For now, let's assume the user selects in JD (unfolded) mode.
+        if folding_on:
+            # We might want to warn the user or handle phase-to-jd conversion later
+            return dash.no_update
+
+            # 2. Append to our list
+        new_interval = [round(x_min, 6), round(x_max, 6)]
+
+        # current_intervals is usually a list of lists: [[start1, end1], [start2, end2]]
+        updated_list = current_intervals if current_intervals else []
+
+        # Prevent exact duplicates
+        if new_interval not in updated_list:
+            updated_list.append(new_interval)
+            # Sort by JD start time
+            updated_list.sort(key=lambda x: x[0])
+
+        return updated_list
+
+    return dash.no_update
+
+
+# ------- interval registry stuff ----
+@app.callback(
+    Output('registry-list-container', 'children'),
+    Input('store-intervals-data', 'data')
+)
+def render_registry(intervals):
+    if not intervals:
+        return html.P("No intervals selected.", className="text-muted small italic")
+
+    cards = []
+    for i, interval in enumerate(intervals):
+        cards.append(
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            # html.Small(f"Interval {i+1}", className="text-muted d-block"),
+                            html.B(f"{interval[0]:.3f}", className="small"),
+                            html.Span(" - ", className="mx-1"),
+                            html.B(f"{interval[1]:.3f}", className="small"),
+                        ], width=9),
+                        dbc.Col([
+                            dbc.Button(
+                                html.I(className="bi bi-trash"),
+                                id={'type': 'del-int', 'index': i},
+                                color="link",  # Removes the button box entirely
+                                className="text-danger p-0",  # "text-danger" keeps the icon red
+                                style={"textDecoration": "none", "fontSize": "0.9rem"},
+                                title="Delete"
+                            )
+                        ], width=3, className="text-end")
+                    ], className="align-items-center")
+                ], className="p-2")
+            ], className="mb-2 shadow-sm")
+        )
+    return cards
+
+
+# --------  Delete individual interval ----------
+@app.callback(
+    # region unfold
+    Output('store-intervals-data', 'data', allow_duplicate=True),
+    Input({'type': 'del-int', 'index': ALL}, 'n_clicks'),
+    State('store-intervals-data', 'data'),
+    prevent_initial_call=True
+    # endregion
+)
+def delete_interval(n_clicks_list, current_intervals):
+    # Check if any button was actually clicked
+    if not any(n_clicks_list):
+        return dash.no_update
+
+    # Find which button index was triggered
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    # Extract the index from the triggered ID string
+    # e.g., '{"index":2,"type":"del-int"}.n_clicks' -> 2
+    import json
+    triggered_id = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])
+    idx_to_remove = triggered_id['index']
+
+    # Remove the item and return the new list
+    if current_intervals and idx_to_remove < len(current_intervals):
+        new_list = [item for i, item in enumerate(current_intervals) if i != idx_to_remove]
+        return new_list
+
+    return dash.no_update
+
+
+# ================= GP callbacks ===================
+
+@app.callback(
+    # region unfold
+    Output('gp-header-area', 'children'),
+    Input('run-btn', 'n_clicks'),          # User clicks Run
+    Input('finished-signal', 'children'),  # The Monster finishes
+    prevent_initial_call=True
+    # endregion
+)
+def update_gp_status_ui(n_clicks, signal_status):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    # 1. THE START: User clicks Run
+    if trigger_id == 'run-btn' and n_clicks > 0:
+        return html.Div([
+            html.H5("GP Processing View", className="fw-bold mb-0"),
+            dbc.Badge([
+                html.I(className="bi bi-hourglass-split me-2"),
+                "RUNNING - Modeling..."
+            ], color="warning", className="ms-2")
+        ], className="d-flex align-items-center mb-3")
+
+    # 2. THE INTERMEDIATE: Plotting has started but isn't over
+    if trigger_id == 'finished-signal' and signal_status == "WAITING":
+        return html.Div([
+            html.H5("GP Processing View", className="fw-bold mb-0"),
+            dbc.Badge([
+                html.I(className="bi bi-gear-wide-connected me-2"),
+                "GENERATING PLOTS..."
+            ], color="info", className="ms-2")
+        ], className="d-flex align-items-center mb-3")
+
+    # 3. THE END: Only show the "Finished" badge for the explicit final signal
+    if trigger_id == 'finished-signal' and signal_status == "FINISHED":
+        return html.Div([
+            html.H5("Results: Normalised flux vs JD", className="fw-bold mb-0"),
+            dbc.Badge([
+                html.I(className="bi bi-check-all me-2"),
+                "FINISHED"
+            ], color="success", className="ms-2")
+        ], className="d-flex align-items-center mb-3")
+
+    return dash.no_update
 
 
 def create_gp_plot(gp_res, jd_max_guess=None):
@@ -1018,6 +1509,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     State('store-lc-data', 'data'),
     State('store-intervals-data', 'data'),
     State('guess-sigma', 'value'),
+    State('extrema-mode', 'value'),
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
     background=True,
@@ -1032,11 +1524,12 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     prevent_initial_call=True
     # endregion
 )
-def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, ids, float_values):
+def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, ids, float_values):
     set_progress(([], "WAITING"))
     p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
+    p['extrema_mode'] = extrema_mode
 
     # 1. Validation: Ensure files are loaded
     if DEBUG:
@@ -1213,8 +1706,8 @@ def update_default_filename(filename):
     if filename:
         # Strip the old extension and add '_maxima.dat'
         base = filename.rsplit('.', 1)[0]
-        return f"{base}_peaks.dat"
-    return "results_peaks.dat"
+        return f"{base}_extrema.dat"
+    return "results_extrema.dat"
 
 
 @app.callback(
@@ -1224,20 +1717,28 @@ def update_default_filename(filename):
     State("export-filename", "value"),
     State({'type': 'fit-selector', 'index': ALL}, 'value'),
     State('store-results-data', 'data'),
+    State('extrema-mode', 'value'),
     prevent_initial_call=True
     # endregion
 )
-def trigger_download(n_clicks, filename_input, selection_mask, results):
-    print(f'------------- downloading {filename_input=} {selection_mask=} {results=}')
+def trigger_download(n_clicks, filename_input, selection_mask, results, extrema_mode):
+    print(f'------------- downloading {filename_input=} {selection_mask=} {results=} {extrema_mode=}')
     if not n_clicks or not results:
         return dash.no_update
 
-    final_filename = filename_input if filename_input else "gp_results_peaks.dat"
-    # Header for the file
-    lines = ["# GP Peak Results\n", "# JD_Peak\tJD_Std\n"]
-    print(lines)
+    mode_label = "Minimum" if extrema_mode == 'min' else "Maximum"
+
+    final_filename = filename_input if filename_input else f"gp_results_{extrema_mode}.dat"
+
+    # 3. Build the content with mode-aware headers
+    # We use \t for easy import into Excel/Topcat/Python
+    lines = [
+        f"# GP {mode_label} Results\n",
+        f"# JD_{mode_label}\tJD_Std\n"
+    ]
 
     # Filter by user checkboxes
+    # Note: we use row['jd_peak'] by historical reasons
     for is_selected, row in zip(selection_mask, results):
         if is_selected:
             lines.append(f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n")
@@ -1292,6 +1793,7 @@ def bulk_toggle_fits(select_clicks, unselect_clicks, current_values):
 if __name__ == '__main__':
     # Debug mode enabled as requested
     app.run(debug=True,
+            port=8052,
             dev_tools_ui=True,  # will pop up a small blue circle in the bottom right of the browser.
             # If a callback fails, it turns red and you can click it to see the full Python
             # error without even looking at your IDE.

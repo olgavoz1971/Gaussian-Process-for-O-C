@@ -1,5 +1,3 @@
-from fileinput import filename
-
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -25,6 +23,9 @@ INTERVALS_FILE = 'data/TCP_J05415572-2308340/intervals.dat'
 # If True: ignore provided errors and estimate them from data scatter (robust MAD).
 # If False: use observer-provided mag_err (recommended when reliable).
 GUESS_SIGMA = False
+
+# min  or max -- what kind of extrema are we hunting
+EXTREMA_MODE = 'max'
 
 # Scaling factor applied to estimated noise when GUESS_SIGMA=True.
 # Larger value → smaller assumed errors → more sensitive (more wiggly fit).
@@ -253,7 +254,7 @@ def add_flux(df):
     return df
 
 
-def residual_noise_estimate(x, y, baseline, ampl_guess):
+def residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode):
     """
     Estimate photometric noise from residuals after subtracting a simple peak model.
 
@@ -278,29 +279,51 @@ def residual_noise_estimate(x, y, baseline, ampl_guess):
 
     # --- define simple symmetric triangular model of maximum ---
     y_vals = y
-    x_left = x.min()
-    x_right = x.max()
+    x_left, x_right = x.min(), x.max()
     x_center = 0.5 * (x_left + x_right)
 
-    y_base = baseline
-    y_peak = baseline + ampl_guess
+    # If mode='max', y_peak is baseline + ampl_guess (higher)
+    # If mode='min', y_peak is baseline - ampl_guess (lower)
+    if extrema_mode == 'max':
+        y_peak = baseline + ampl_guess
+    else:
+        y_peak = baseline - ampl_guess
+
+    # y_base = baseline
+    # y_peak = baseline + ampl_guess
 
     y_model = np.zeros_like(y_vals)
 
-    # left branch (rising)
+    # The slopes naturally follow y_peak:
+    # Left branch
     left_mask = x <= x_center
-    y_model[left_mask] = y_base + (y_peak - y_base) * (
+    y_model[left_mask] = baseline + (y_peak - baseline) * (
             (x[left_mask] - x_left) / (x_center - x_left)
     )
 
-    # right branch (falling)
+    # Right branch
     right_mask = x > x_center
-    y_model[right_mask] = y_peak - (y_peak - y_base) * (
+    y_model[right_mask] = y_peak - (y_peak - baseline) * (
             (x[right_mask] - x_center) / (x_right - x_center)
     )
 
     # --- residuals ---
     residuals = y_vals - y_model
+
+    # left branch (rising)
+    # left_mask = x <= x_center
+    # y_model[left_mask] = y_base + (y_peak - y_base) * (
+    #         (x[left_mask] - x_left) / (x_center - x_left)
+    # )
+
+    # right branch (falling)
+    # right_mask = x > x_center
+    # y_model[right_mask] = y_peak - (y_peak - y_base) * (
+    #         (x[right_mask] - x_center) / (x_right - x_center)
+    # )
+
+    # --- residuals ---
+    # residuals = y_vals - y_model
 
     # robust noise estimate from residuals
     mad = median_abs_deviation(residuals, scale='normal')
@@ -342,6 +365,7 @@ def gp_peak_pipeline(
         - 'length_scale_min', 'length_scale_max'    Bounds
         - 'white_noise_level_init' Initial guess about White Kernel noise level
         - 'white_noise_level_min', 'white_noise_level_max' Bounds
+        - 'extrema_mode', 'min' or 'max'
 
     n_grid : int
         Number of points in the fine evaluation grid (for mean/derivative).
@@ -365,6 +389,7 @@ def gp_peak_pipeline(
             'mean_grid'                     # GP mean on grid
             'std_grid'
             'noise_sigma_norm'              # normalised sigma of the input data
+            'extrema_mode'                  # max or min
         }
     """
 
@@ -377,13 +402,32 @@ def gp_peak_pipeline(
     y = frag['flux'].values.copy()
     z = frag['flux_err'].values.copy()
 
-    # --- 2. baseline and amplitude ---
-    baseline = float(np.percentile(y, 5))
-    ampl_guess = np.percentile(y, 95) - baseline
-    print(f'{baseline=:.3f} {ampl_guess=:.3f}')
+    # --- 2. Determine Search Mode ---
+    # Get mode from params: 'min' or 'max' (default to 'min' as per your UI)
+    extrema_mode = params.get('extrema_mode', 'min')
+
+    # --- 3. baseline and amplitude (Mode Aware) ---
+    if extrema_mode == 'max':
+        # For a peak: baseline is at the bottom, amplitude is positive (up)
+        baseline = float(np.percentile(y, 5))
+        ampl_guess = np.percentile(y, 95) - baseline
+    else:
+        # For a minimum: baseline is at the top, amplitude is "negative" (down)
+        # OR keep amplitude positive but flip the model logic.
+        # Let's keep ampl_guess positive and just flip the triangle while (and if)
+        # guess_sigma in residual_noise_estimate()
+        baseline = float(np.percentile(y, 95))
+        ampl_guess = baseline - np.percentile(y, 5)
 
     if ampl_guess <= 0:
         ampl_guess = np.std(y) if np.std(y) > 0 else 1.0
+
+    # baseline = float(np.percentile(y, 5))
+    # ampl_guess = np.percentile(y, 95) - baseline
+    print(f'{baseline=:.3f} {ampl_guess=:.3f}')
+
+    # if ampl_guess <= 0:
+    #     ampl_guess = np.std(y) if np.std(y) > 0 else 1.0
 
     # --- 4. normalisation ---
     y_norm = (y - baseline) / ampl_guess
@@ -391,7 +435,7 @@ def gp_peak_pipeline(
     # --- 3. estimate noise ---
     # If guess_sigma=True OR no valid errors → use MAD
     if params['guess_sigma'] or np.all(np.isnan(z)):
-        noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess)
+        noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode)
         noise_sigma /= params['noise_scale_divisor']  # empirical factor, allow user tune it
         print(f'guessed {noise_sigma=:.3f}')
         # propagate noise into normalized units
@@ -468,44 +512,52 @@ def gp_peak_pipeline(
     # ------- 7.2 predict ---
     mean_grid, std_grid = gp.predict(jd_grid, return_std=True)
 
-    # --- 8. peak ---
-    idx_peak = np.argmax(mean_grid.ravel())
-    jd_peak = jd_grid.ravel()[idx_peak]
-    mean_peak = mean_grid.ravel()[idx_peak]
+    # --- 9. Estimate Extremum on Mean Grid ---
+    if extrema_mode == 'max':
+        idx_extr = np.argmax(mean_grid.ravel())
+    else:
+        idx_extr = np.argmin(mean_grid.ravel())
 
-    # --- 9. uncertainty on peak via posterior sampling ---
-    # draw samples of functions on the grid from the posterior and find maxima positions
-    # sample_y returns shape (n_points, n_samples)
+    jd_extr = jd_grid.ravel()[idx_extr]
+    mean_extr = mean_grid.ravel()[idx_extr]
+
+    # --- 10. Uncertainty via Posterior Sampling ---
+    # Draw samples: (n_points, n_samples)
     samples = gp.sample_y(jd_grid, n_samples=n_samples_uncert, random_state=random_state)
-    peaks = np.argmax(samples, axis=0)
-    peaks_jd = jd_grid.ravel()[peaks]
-    jd_peak_std = float(np.std(peaks_jd))
 
-    # --- 10. plotting ---
+    if extrema_mode == 'max':
+        # Find indices of maxima for each sampled curve
+        extr_indices = np.argmax(samples, axis=0)
+    else:
+        # Find indices of minima for each sampled curve
+        extr_indices = np.argmin(samples, axis=0)
+
+    extr_jds = jd_grid.ravel()[extr_indices]
+
+    # Calculate uncertainty (standard deviation of the time of extremum)
+    jd_extr_std = float(np.std(extr_jds))
+
+    # --- 11. Plotting ---
     if plot_final:
+        # Pass the correct JD and standard deviation to your plotting function
         plot_GP_results(x, y_norm, noise_sigma_norm,
-                        jd_peak, mean_peak, peaks_jd, None, jd_peak_std,
+                        jd_extr, mean_extr, extr_jds, None, jd_extr_std,
                         jd_grid, mean_grid, std_grid, n_samples_uncert)
 
     return {
-        # "x": x,
-        # "y_norm": y_norm,
         "noise_sigma_norm": noise_sigma_norm,
         "jd_grid": jd_grid,
         "mean_grid": mean_grid,
         "std_grid": std_grid,
-        "peaks_jd": peaks_jd,
-        "jd_peak": jd_peak,
-        "jd_peak_std": jd_peak_std,
-        "mean_peak": mean_peak,
+        "peaks_jd": extr_jds,  # Reusing keys to avoid breaking your Plotter
+        "jd_peak": jd_extr,  # Reusing keys
+        "jd_peak_std": jd_extr_std,  # Reusing keys
+        "mean_peak": mean_extr,  # Reusing keys
         "n_samples_uncert": n_samples_uncert,
         "gp": gp,
+        "extrema_mode": extrema_mode  # Helpful for the frontend to know what it's looking at
     }
 
-
-# =========================
-# MAIN
-# =========================
 
 def main():
     df0 = read_lc(FILENAME_IN)
@@ -542,7 +594,8 @@ def main():
                     "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
                     "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
                     "white_noise_level_max": WHITE_NOISE_LEVEL_MAX,
-                    "guess_sigma": GUESS_SIGMA
+                    "guess_sigma": GUESS_SIGMA,
+                    "extrema_mode": EXTREMA_MODE
                 },
                 plot_final=True,
             )
