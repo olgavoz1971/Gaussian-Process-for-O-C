@@ -1,118 +1,15 @@
 # --- Documentation Content ---
 
-# DOC_MARKDOWN = """
-# # Lightcurve Extrema Modeler (Working draft)
-#
-#
-# ## The Core Concept: Non-Parametric Modeling
-# Unlike traditional fitting, which assumes a fixed shape (like a parabola), this tool treats the lightcurve
-# as a **stochastic process**. Specifically, we assume that our observations are realizations of
-# a **Gaussian Process (GP)**.
-#
-# In the language of **sklearn.gaussian_process**, we are performing Bayesian inference in a function space.
-# We don't ask "What are the parameters of this curve?", but rather "Which smooth functions are most likely
-# to have generated these data points?"
-#
-# ## Why Gaussian Processes (GP)?
-# When you have noisy time-series with gaps and asymmetrical details, GP is often superior
-# to polynomials or splines because:
-# * Gap-Resilient: It models the signal's covariance, avoiding artifacts in areas of uneven cadence or gaps.
-# * Shape-Flexible: As a non-parametric tool, it captures rapid changes and asymmetries without
-# the rigidity of fixed equations.
-# * Noise-Aware: It separates observational jitter from the real signal, preventing outliers from biasing the fit.
-#
-# ---
-#
-# ## GP Parameters: Mathematical Meaning and Intuition
-#
-# The "behavior" of the GP is governed by the **Kernel** (the covariance function). We utilize a composite kernel:
-# `Constant * Matern(nu=2.5) + WhiteKernel`.
-#
-# ### 1. RBF / Matern Length Scale (ℓ) * **Strong Term:** The *characteristic length scale* of the covariance. *
-# **Intuition:** This is the "stiffness" of your curve. * **Small (ℓ):** The GP is very flexible and "wiggly." It
-# will follow every small data bump. * **Large (ℓ):** The GP becomes stiff and smooth. * **Tweak Advice:** If the
-# fit is "overshooting" or missing the peak by being too flat, **decrease** the maximum bound of the length scale. If
-# it is fitting the noise (jitter) instead of the signal, **increase** the minimum bound.
-#
-# ### 2. White Noise Level (σ²_noise)
-# * **Strong Term:** The *nugget effect* or the diagonal of the covariance matrix.
-# * **Intuition:** This represents the photometric "floor" of your noise. It accounts for the fact that data points
-# don't lie perfectly on a smooth line.
-# * **Tweak Advice:** If the GP mean ignores your data points too much, the noise level might be set too high.
-# Use the **Noise Divisor** or **Guess Sigma** to force the GP to trust the data points more.
-#
-# ### 3. Noise Divisor
-# * **Intuition:** This is an empirical scaling factor for your input error bars ($flux\_err$).
-# * **Tweak Advice:** If you suspect your original errors are overestimated (causing the GP to
-# "smooth out" the real peak), increase this divisor to shrink the errors and "tighten" the fit.
-#
-# ## GP Parameters: practical hints:
-# * GUESS_SIGMA
-# Ignore provided flux(magnitude) unceratinties and estimate noise from scatter.
-# Use ON if errors are missing/unreliable. Keep OFF if your uncertainties are trustworthy.
-#
-# * NOISE_SCALE_DIVISOR
-# Empirical correction factor for noise estimated from data (used when GUESS_SIGMA=True).
-# The noise estimate is only rough guess; this parameter lets the user adjust it.
-# Higher values reduce assumed errors → more sensitive, more wiggly fit.
-# Lower values increase assumed errors → smoother, more conservative fit.
-# Typical tuning: increase if the GP is too flat; decrease if it starts fitting noise.
-#
-# * LENGTH_SCALE (MIN/ INIT / MAX)
-# Controls how fast the GP can vary in time (i.e. smoothness).
-# INIT: starting guess; set ~ half of a typical feature width (eclipse, peak).
-# MIN: smallest allowed scale; prevents fitting noise (too small → overfitting).
-# MAX: largest allowed scale; prevents over-smoothing (too large → missed structure).
-# If fit is too wiggly → increase scales. If too smooth → decrease.
-#
-# * WHITE_NOISE_LEVEL (MIN /INIT / MAX)
-# Extra noise the model can add on top of measurement errors.
-# Use to compensate underestimated uncertainties.
-# Higher values → smoother fit (more treated as noise).
-# Lower values → GP tries to follow data more closely.
-# If your flux(mag) uncertainties is reliable, keep these small and tightly bounded.
-#
-# * EXTREMA_MODE
-# Select what to detect:
-# 'min' - minima (eclipses)
-# 'max' - maxima (peaks)
-# Choose according to the feature of interest in the selected interval.
-#
-# ---
-#
-# ## Extremum Times and Uncertainty Estimation
-#
-# How do we find the "Time of Minimum/Maximum" and its error?
-#
-# 1.  **Mean Prediction:** We first find the extremum of the **GP Mean Map**. This is our most probable
-# value JD_extremum.
-# 2.  **Posterior Sampling:** To find the uncertainty, we draw _N_ random functions from
-# the **Posterior Distribution**.
-# 3.  **Distribution Analysis:** For each of these _N_ random "possible lightcurves" we find the peak.
-# The spread (standard deviation) of these peaks gives us our **JD Uncertainty σ_JD**.
-#
-# This method is mathematically superior to simple "error propagation" because it accounts for the entire shape
-# of the probability landscape around the feature.
-#
-# ---
-#
-# ## References
-#
-# * **Pedregosa et al. (2011):** [Scikit-learn: Machine Learning in Python]
-# (https://jmlr.csail.mit.edu/papers/v12/pedregosa11a.html), JMLR 12, pp. 2825-2830. Specifically the `GaussianProcessRegressor` module.
-# * **Rasmussen & Williams (2006):** [Gaussian Processes for Machine Learning]
-# (http://www.gaussianprocess.org/gpml/), MIT Press. (The "Bible" of GPs).
-# """
-
-
 DOC_MARKDOWN = """
 
-# Lightcurve Extrema Modeler
+# Lightcurve Extrema Modeller
 
 ## What this tool does
-This tool models a selected fragment of a light curve and determines the time of a minimum or maximum, together with its uncertainty.
+This tool models a selected fragment of a light curve and determines the time of a minimum or maximum, 
+together with its uncertainty.
 
-Instead of fitting a fixed function (e.g. parabola), it builds a **smooth probabilistic model** of the data using a **Gaussian Process (GP)**.  
+Instead of fitting a fixed function (e.g. parabola), it builds a **smooth probabilistic model** 
+of the data using a **Gaussian Process (GP)**.  
 In practice, this means:
 - the model adapts to the actual shape of the light curve,
 - it handles uneven sampling and gaps naturally,
@@ -132,7 +29,8 @@ This method is useful when:
 ---
 
 ## How the model behaves
-The model is controlled by a few parameters that define how “flexible” or “smooth” the curve is, and how much it trusts the data.
+The model is controlled by a few parameters that define how “flexible” or “smooth” the curve is, 
+and how much it trusts the data.
 
 Internally, we use a kernel of the form:
 
@@ -269,7 +167,8 @@ This tool uses the `GaussianProcessRegressor` from the
 
 ## References
 - **Pedregosa et al. (2011):** [Scikit-learn: Machine Learning in Python]
-(https://jmlr.csail.mit.edu/papers/v12/pedregosa11a.html), JMLR 12, pp. 2825-2830. Specifically the `GaussianProcessRegressor` module.
+(https://jmlr.csail.mit.edu/papers/v12/pedregosa11a.html), JMLR 12, pp. 2825-2830. 
+Specifically the `GaussianProcessRegressor` module.
 - **Rasmussen & Williams (2006):** [Gaussian Processes for Machine Learning]
 (http://www.gaussianprocess.org/gpml/), MIT Press. (The "Bible" of GPs).
 """
@@ -294,8 +193,7 @@ from gp import (
     GUESS_SIGMA, LEN_MIN,
     read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
     NOISE_SCALE_DIVISOR,
-    LENGTH_SCALE_INIT, LENGTH_SCALE_MIN, LENGTH_SCALE_MAX,
-    WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX
+    WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX, EXTREMA_MODE, guess_length_scale
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -304,9 +202,9 @@ DEBUG = False
 
 params_float = {
     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
-    "length_scale_init": LENGTH_SCALE_INIT,
-    "length_scale_min": LENGTH_SCALE_MIN,
-    "length_scale_max": LENGTH_SCALE_MAX,
+    "length_scale_init": 0.1,  # we estimate actual values after setting intervals
+    "length_scale_min": 0.01,
+    "length_scale_max": 1,
     "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
     "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
     "white_noise_level_max": WHITE_NOISE_LEVEL_MAX
@@ -327,53 +225,13 @@ app = dash.Dash(__name__,
 # ==================== Layout utils ===================
 
 def create_float_input(label, default_val, tooltip_text, index, step=1.0):
-    """Helper to create labeled float inputs with tooltips."""
+    """Helper to create labelled float inputs with tooltips."""
     return html.Div([
         dbc.Label(label, id=f"label-{index}"),
         dbc.Tooltip(tooltip_text, target=f"label-{index}"),
         dbc.Input(id={'type': 'float-input', 'index': index},
                   type="number", value=default_val, step=step),
     ], className="mb-2")
-
-
-# def create_parameter_triple(main_label, main_tooltip, prefix, defaults: dict, step=0.001):
-#     """
-#     Creates a grouped set of 3 inputs (Min, Init, Max) with a common header.
-#     - prefix: the base string for the dictionary keys (e.g., 'white_noise_level')
-#     - defaults: the params_float dictionary
-#     """
-#     return html.Div([
-#         # Main Category Label with Tooltip
-#         html.Div([
-#             html.B(main_label, id=f"triple-label-{prefix}", style={"cursor": "help"}),
-#             dbc.Tooltip(main_tooltip, target=f"triple-label-{prefix}"),
-#         ], className="mt-3 mb-1"),
-#
-#         # Row of 3 inputs
-#         dbc.Row([
-#             # MIN
-#             dbc.Col([
-#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_min"},
-#                           type="number", value=defaults[f"{prefix}_min"], step=step, size="sm"),
-#                 html.Small("Min", className="text-muted d-block text-center")
-#             ], width=4, className="pe-1"),
-#
-#             # INIT
-#             dbc.Col([
-#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_init"},
-#                           type="number", value=defaults[f"{prefix}_init"], step=step, size="sm",
-#                           style={"border-color": "#007bff"}),  # Highlight initial guess
-#                 html.Small("Init", className="text-muted d-block text-center")
-#             ], width=4, className="px-1"),
-#
-#             # MAX
-#             dbc.Col([
-#                 dbc.Input(id={'type': 'float-input', 'index': f"{prefix}_max"},
-#                           type="number", value=defaults[f"{prefix}_max"], step=step, size="sm"),
-#                 html.Small("Max", className="text-muted d-block text-center")
-#             ], width=4, className="ps-1"),
-#         ], className="g-0")  # No gutters for maximum compactness
-#     ], className="mb-2 p-2 border-bottom")
 
 
 def LegendItem(color, label, mode='line'):
@@ -581,7 +439,7 @@ sidebar_gp = html.Div([
                     {"label": "Search Minima", "value": "min"},
                     {"label": "Search Maxima", "value": "max"},
                 ],
-                value="max",
+                value=EXTREMA_MODE,
                 size="sm",
             )
         ], width=12),
@@ -660,7 +518,6 @@ sidebar_gp = html.Div([
 
 ], className="p-3 bg-light border rounded shadow-sm")
 
-
 # =====================  LAYOUT ==================================================
 graph_gp = html.Div([
     html.Div(id='finished-signal', style={'display': 'none'}),
@@ -706,14 +563,13 @@ graph_gp = html.Div([
     dcc.Store(id='store-results-data')
 ], className="p-2")
 
-
 app.layout = dbc.Container([
     # --- HEADER SECTION ---
     dbc.Row([
         dbc.Col([
             # html.H1("Astro-GP", className="display-4 text-primary mb-0"),
-            # html.P("Lightcurves Extrema Modeler", className="lead text-muted")
-            html.H1("Lightcurve Extrema Modeler (working draft)")  # , className="display-4 text-primary mb-0")
+            # html.P("Lightcurves Extrema Modeller", className="lead text-muted")
+            html.H1("Lightcurve Extrema Modeller (working draft)")  # , className="display-4 text-primary mb-0")
         ], width="auto"),
         dbc.Col(
             dbc.Button([html.I(className="bi bi-question-circle me-2"), "About"],
@@ -779,70 +635,76 @@ app.layout = dbc.Container([
 
     # --- 3. THE WORKFLOW ACCORDION ---
 
-    dbc.Accordion([
-        dbc.AccordionItem(
-            item_id="accordion-lc",
-            title="Lightcurve and Intervals",
-            children=[
-                dbc.Row([
-                    # Sidebar (Column 1 - Fixed)
-                    dbc.Col(sidebar_lc, width=3),
+    dbc.Accordion(
+        [
+            dbc.AccordionItem(
+                item_id="accordion-lc",
+                title="Lightcurve and Intervals",
+                children=[
+                    dbc.Row([
+                        # Sidebar (Column 1 - Fixed)
+                        dbc.Col(sidebar_lc, width=3),
 
-                    # Working Area (Column 2 & 3 combined into a Flex container)
-                    dbc.Col([
-                        html.Div([
-                            # Graph Area (Grows automatically)
+                        # Working Area (Column 2 & 3 combined into a Flex container)
+                        dbc.Col([
                             html.Div([
-                                graph_lc,
-                                registry_toggle_btn
-                            ],
-                                style={
-                                "flex": "1",
-                                "minWidth": "0",
-                                "position": "relative",
-                                "transition": "none",  # Kill the animation for instant speed
-                                # "transition": "flex 0.3s ease"
-                            } ),
+                                # Graph Area (Grows automatically)
+                                html.Div([
+                                    graph_lc,
+                                    registry_toggle_btn
+                                ],
+                                    style={
+                                        "flex": "1",
+                                        "minWidth": "0",
+                                        "position": "relative",
+                                        "transition": "none",  # Kill the animation for instant speed
+                                        # "transition": "flex 0.3s ease"
+                                    }),
 
-                            # Registry Area (Collapses horizontally)
-                            dbc.Collapse(
-                                intervals_registry,
-                                id="registry-collapse",
-                                is_open=True,
-                                dimension="width",
-                                style={
-                                    # "transition": "0.3s ease",
-                                    "transition": "none",  # Kill the animation for instant speed
-                                    "flexShrink": "0",
-                                    # "minWidth": "0px"
-                                }
-                            )
-                        ], style={
-                            "display": "flex",
-                            "flexDirection": "row",
-                            "flexWrap": "nowrap",
-                            "overflow": "hidden",
-                            "alignItems": "stretch"
-                        })
-                    ], width=9)
-                    # dbc.Col(graph_lc, width=6),
-                    # dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
+                                # Registry Area (Collapses horizontally)
+                                dbc.Collapse(
+                                    intervals_registry,
+                                    id="registry-collapse",
+                                    is_open=True,
+                                    dimension="width",
+                                    style={
+                                        # "transition": "0.3s ease",
+                                        "transition": "none",  # Kill the animation for instant speed
+                                        "flexShrink": "0",
+                                        # "minWidth": "0px"
+                                    }
+                                )
+                            ], style={
+                                "display": "flex",
+                                "flexDirection": "row",
+                                "flexWrap": "nowrap",
+                                "overflow": "hidden",
+                                "alignItems": "stretch"
+                            })
+                        ], width=9)
+                        # dbc.Col(graph_lc, width=6),
+                        # dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
+                    ]),
                 ]),
-            ]),
 
-        # --- STEP 2: ANALYSIS (The "Monster") ---
-        dbc.AccordionItem(
-            item_id="accordion-gp",
-            title="Gaussian Process",
-            children=[
-                dbc.Row([
-                    dbc.Col(sidebar_gp, width=3),
-                    dbc.Col(graph_gp, width=9),
-                ]),
-                html.Div(id="main-analysis-wrapper")
-            ],
-        ),
-    ], id="main-workflow-accordion", active_item="accordion-lc"),
+            # --- STEP 2: ANALYSIS (The "Monster") ---
+            dbc.AccordionItem(
+                item_id="accordion-gp",
+                title="Gaussian Process",
+                children=[
+                    dbc.Row([
+                        dbc.Col(sidebar_gp, width=3),
+                        dbc.Col(graph_gp, width=9),
+                    ]),
+                    html.Div(id="main-analysis-wrapper")
+                ],
+            )
+        ],
+        id="main-workflow-accordion",
+        always_open=True,  # Allows multiple items to stay open simultaneously
+        active_item=["accordion-lc", "accordion-gp"],   # Opens both by default on load
+    ),
+
 ], fluid=True)
 
 
@@ -899,12 +761,13 @@ def toggle_gp_legend(n_clicks, is_open):
 @app.callback(
     # region unfold
     Output('prep-graph', 'figure'),
-    Input('store-lc-data', 'data'),  # Assuming data is stored here after upload
+    Input('store-lc-data', 'data'),
     Input('store-intervals-data', 'data'),
     Input('folding-switch', 'value'),
     Input('input-period', 'value'),
     Input('input-epoch', 'value'),
-    Input('view-mode-radio', 'value')
+    Input('view-mode-radio', 'value'),
+    # State('prep-graph', 'relayoutData')  # Optional?
     # endregion
 )
 def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch, view_mode):
@@ -914,87 +777,78 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
     di = json.loads(lc_json_string)
     df = pd.DataFrame(data=di['data'], columns=di['columns'])
 
-    x_data = df['jd']
-    y_data = df['mag']
-    x_label = "Julian Date (JD)"
+    # Determine Y and Error columns based on view mode
+    y_col = 'mag' if view_mode == 'mag' else 'flux'
+    err_col = 'mag_err'  # Assuming your add_flux or read_lc provides this
 
+    x_data = df['jd']
+    y_data = df[y_col]
+
+    # Check if error bars exist in the dataframe
+    error_y_logic = None
+    if err_col in df.columns:
+        error_y_logic = dict(
+            type='data',
+            array=df[err_col],
+            visible=True,
+            thickness=1,
+            width=0,  # Set to 0 to avoid "crossbar" clutter on dense LC
+            color='rgba(100, 100, 100, 0.3)'  # Subtle grey
+        )
+
+    x_label = "Julian Date (JD)"
     if folding_on and period and period > 0:
         t0 = epoch if epoch is not None else x_data.min()
         x_data = ((x_data - t0) / period) % 1.0
         x_label = f"Phase (P={period} d, T₀={t0})"
 
-    # 3. Build Figure
     fig = go.Figure()
+
+    # 1. Main Data Trace with Error Bars
     fig.add_trace(go.Scatter(
         x=x_data, y=y_data,
         mode='markers',
+        selectedpoints=None,
+        # Define how points look when they AREN'T in a box (prevents dimming)
+        unselected=dict(marker=dict(opacity=0.7, color='blue')),
+        # Define how they look when they ARE in a box (while dragging)
+        selected=dict(marker=dict(opacity=1.0, color='green')),
+        error_y=error_y_logic,  # <--- Error bars added here
         hoverinfo='none',
         marker=dict(
             size=4,
-            color='blue',  # Standard Plotly Blue, or use '#003366' for even darker
+            color='blue',
             opacity=0.7,
-            line=dict(width=0.5, color='White')  # Adds definition to overlapping points
+            line=dict(width=0.5, color='White')
         ),
         name="Data"
     ))
 
+    # 2. Layout with UI Revision
     fig.update_layout(
         xaxis_title=x_label,
         yaxis_title="Magnitude" if view_mode == 'mag' else "Flux",
         yaxis_autorange='reversed' if view_mode == 'mag' else True,
         margin=dict(l=10, r=10, t=20, b=40),
         template="plotly_white",
-        hovermode=False,
-        dragmode='pan',  # 'zoom',  # Default to selection tool
-        # Optional: Make the selection color distinctive (e.g., gold)
-        # so it's clear when the user switches to the Box tool
-        selectdirection='h',  # Usually we only care about the JD range (horizontal)
-        # newshape=dict(line_color='#FFD700', fillcolor='#FFD700', opacity=0.3),
-        # This controls BOTH drawline and drawrect
-        newshape=dict(
-            line_color='red',  # Much easier to see than yellow
-            line_width=3,
-            opacity=0.5,
-            # drawdirection='horizontal'      # Helps keep the ruler straight if you only want JD
-        ),
-        # THE RULER SETTING: This enables the pop-up labels for distance
-        # modebar=dict(
-        #     addcategory='drawlabel'     # Some versions of Plotly use this to force labels
-        # ),
-        # xaxis=dict(
-        #     showspikes=True,  # Show the vertical line
-        #     spikemode='across',
-        #     spikesnap='cursor',
-        #     spikethickness=1,
-        #     spikedash='dash',
-        #     spikecolor='grey'
-        # ),
-        # yaxis=dict(
-        #     showspikes=True,  # Show the horizontal line
-        #     spikemode='across',
-        #     spikesnap='cursor',
-        #     spikethickness=1,
-        #     spikedash='dash',
-        #     spikecolor='grey'
-        # ),
-        # hovermode='x',
-        # modebar=dict(
-        #     orientation='h',
-        #     bgcolor='rgba(255,255,255,0.7)'
-        # )
+        dragmode='pan',
+        selectdirection='h',
+        # --- THE FIX FOR ZOOM RESET ---
+        # Using lc_json_string means zoom only resets when a NEW file is uploaded.
+        # Adding an interval won't trigger a reset.
+        uirevision=lc_json_string,
+        # ------------------------------
+        newshape=dict(line_color='red', line_width=3, opacity=0.5),
     )
 
-    # 4. Mark selected intervals if any
+    # 3. Mark selected intervals
     if intervals_data:
-        for i, interval in enumerate(intervals_data):
-            # interval is [jd_start, jd_end]
+        for interval in intervals_data:
             fig.add_vrect(
                 x0=interval[0], x1=interval[1],
                 fillcolor="green", opacity=0.15,
                 layer="below", line_width=1,
                 line_color="green",
-                # annotation_text=f"{i + 1}",
-                # annotation_position="top left"
             )
 
     return fig
@@ -1195,6 +1049,76 @@ def clear_all_intervals(n_clicks):
     return dash.no_update
 
 
+@app.callback(
+    # region unfold
+    Output({'type': 'float-input', 'index': 'length_scale_min'}, 'value', allow_duplicate=True),
+    Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
+    Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
+    Input('store-intervals-data', 'data'),
+    State('store-lc-data', 'data'),
+    prevent_initial_call=True
+    # endregion
+)
+def update_GP_scale(intervals, lc_json_string):
+    if not lc_json_string or not intervals:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    di = json.loads(lc_json_string)
+    df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
+
+    # Search for the first interval that actually contains enough data points
+    for piece in intervals:
+        jd_min, jd_max = piece[0], piece[-1]
+        frag = select_jd_interval(df_lc, jd_min, jd_max)
+
+        if len(frag) >= LEN_MIN:
+            scale = guess_length_scale(frag)
+            return (
+                round(scale['length_scale_min'], 6),  # round here is purely for UI aesthetics
+                round(scale['length_scale_init'], 6),
+                round(scale['length_scale_max'], 6)
+            )
+
+    return dash.no_update, dash.no_update, dash.no_update
+
+
+# @app.callback(
+#     Output({'type': 'float-input', 'index': 'length_scale_min'}, 'value', allow_duplicate=True),
+#     Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
+#     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
+#     Input('store-intervals-data', 'data'),
+#     State('store-lc-data', 'data'),
+#     prevent_initial_call=True
+# )
+# def update_GP_scale(intervals, lc_json_string):
+#     print('update_GP_scale')
+#     if not lc_json_string or not intervals:
+#         return dash.no_update, dash.no_update, dash.no_update
+#     if len(intervals) == 0:
+#         return dash.no_update, dash.no_update, dash.no_update
+#
+#     di = json.loads(lc_json_string)
+#     df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
+#
+#     if len(df_lc) == 0:
+#
+#         return dash.no_update, dash.no_update, dash.no_update
+#
+#     for piece in intervals:
+#         jd_min, jd_max = piece[0], piece[-1]
+#
+#         if len(select_jd_interval(df_lc, jd_min, jd_max)) < LEN_MIN:
+#             continue
+#         frag = select_jd_interval(df_lc, jd_min, jd_max)
+#         if frag.empty:
+#             continue
+#         scale = guess_length_scale(frag)
+#         # return scale on the first valid interval
+#         return scale['length_scale_min'], scale['length_scale_init'],  scale['length_scale_max']
+#
+#     return dash.no_update, dash.no_update, dash.no_update
+
+
 # ------- graphical interval selection
 @app.callback(
     # region infold
@@ -1316,12 +1240,13 @@ def delete_interval(n_clicks_list, current_intervals):
 @app.callback(
     # region unfold
     Output('gp-header-area', 'children'),
-    Input('run-btn', 'n_clicks'),          # User clicks Run
+    Input('run-btn', 'n_clicks'),  # User clicks Run
+    Input('cancel-btn', 'n_clicks'),  # we can not send relevant "cancelled" signal when cancel background callback
     Input('finished-signal', 'children'),  # The Monster finishes
     prevent_initial_call=True
     # endregion
 )
-def update_gp_status_ui(n_clicks, signal_status):
+def update_gp_status_ui(run_clicks, cancel_clicks, signal_status):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
@@ -1329,7 +1254,7 @@ def update_gp_status_ui(n_clicks, signal_status):
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
     # 1. THE START: User clicks Run
-    if trigger_id == 'run-btn' and n_clicks > 0:
+    if trigger_id == 'run-btn' and run_clicks > 0:
         return html.Div([
             html.H5("GP Processing View", className="fw-bold mb-0"),
             dbc.Badge([
@@ -1338,7 +1263,17 @@ def update_gp_status_ui(n_clicks, signal_status):
             ], color="warning", className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
-    # 2. THE INTERMEDIATE: Plotting has started but isn't over
+    # 2. THE INTERRUPTION: User clicks Cancel
+    if trigger_id == 'cancel-btn' and cancel_clicks > 0:
+        return html.Div([
+            html.H5("GP Processing View", className="fw-bold mb-0"),
+            dbc.Badge([
+                html.I(className="bi bi-x-circle me-2"),
+                "CANCELLED BY USER"
+            ], color="danger", className="ms-2")
+        ], className="d-flex align-items-center mb-3")
+
+    # 3. THE INTERMEDIATE: Plotting has started but isn't over
     if trigger_id == 'finished-signal' and signal_status == "WAITING":
         return html.Div([
             html.H5("GP Processing View", className="fw-bold mb-0"),
@@ -1348,7 +1283,7 @@ def update_gp_status_ui(n_clicks, signal_status):
             ], color="info", className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
-    # 3. THE END: Only show the "Finished" badge for the explicit final signal
+    # 4. THE END: Only show the "Finished" badge for the explicit final signal
     if trigger_id == 'finished-signal' and signal_status == "FINISHED":
         return html.Div([
             html.H5("Results: Normalised flux vs JD", className="fw-bold mb-0"),
@@ -1359,6 +1294,38 @@ def update_gp_status_ui(n_clicks, signal_status):
         ], className="d-flex align-items-center mb-3")
 
     return dash.no_update
+
+
+def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
+    """
+    Wraps a graph or an alert into a standardized card with badges and checkboxes.
+    """
+    badge_row = html.Div(badges, style={"textAlign": "center", "marginBottom": "2px"}) if badges else None
+
+    # Checkbox logic for Review Mode
+    checkbox = None
+    if checkbox_id:
+        checkbox = dbc.Checkbox(
+            id=checkbox_id,
+            value=not is_fail,
+            disabled=is_fail,  # Can't keep a failure
+            label="Keep Result" if not is_fail else "Fit Failed",
+            className="mb-1 fw-bold"
+        )
+
+    return dbc.Col(
+        html.Div([
+            checkbox,
+            badge_row,
+            content
+        ], style={
+            "border": "1px solid #eee",
+            "padding": "10px",
+            "borderRadius": "5px",
+            "backgroundColor": "#fdfdfd" if is_fail else "white"
+        }),
+        width=6, className="px-1 mb-2"
+    )
 
 
 def create_gp_plot(gp_res, jd_max_guess=None):
@@ -1377,7 +1344,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     jd_peak_std = gp_res['jd_peak_std']
     peaks_jd = gp_res['peaks_jd']
     mean_peak = gp_res['mean_peak']
-    n_samples_uncert = gp_res['n_samples_uncert']
+    # n_samples_uncert = gp_res['n_samples_uncert']
     # endregion
 
     # 1. Data Points: Custom hover format
@@ -1545,117 +1512,91 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
         di = json.loads(lc_json_string)
         df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
+    results_for_storage = []  # We now store EVERYTHING here
     live_figs = []
-    results_for_storage = []
 
     for i, piece in enumerate(intervals):
         jd_min, jd_max = piece[0], piece[-1]
-        jd_max_guess = piece[1] if len(piece) > 2 else None
+        frag = select_jd_interval(df_lc, jd_min, jd_max)
 
-        if len(select_jd_interval(df_lc, jd_min, jd_max)) < LEN_MIN:
+        if len(frag) < LEN_MIN:
             continue
 
+        res_entry = {'jd_min': jd_min, 'jd_max': jd_max, 'is_fail': False}
+
         try:
-            # --- THE FRAGILE MAGIC ---
-            # 1. Calculations
-            gp_res = gp_peak_pipeline(df_lc, jd_min, jd_max, params=p)
+            gp_res = gp_peak_pipeline(frag, params=p)
+            fig = create_gp_plot(gp_res)
 
-            # 2. Build "Light Mode" Graph for Live View
-            fig = create_gp_plot(gp_res, jd_max_guess=jd_max_guess)
-
-            # Store data for the final phase
-            results_for_storage.append({'jd_peak': gp_res["jd_peak"],
-                                        'jd_peak_std': gp_res["jd_peak_std"],
-                                        'figure': fig})
-            # Extract kernel params
-            optimized_kernel = gp_res['gp'].kernel_
-            optimized_params = optimized_kernel.get_params()
+            # Extract kernel params for badges
+            optimized_params = gp_res['gp'].kernel_.get_params()
             opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
             opt_w = optimized_params.get('k2__noise_level', 0.0)
 
-            # Define colours
-            l_color = "danger" if (opt_l <= p['length_scale_min'] * 1.01 or
-                                   opt_l >= p['length_scale_max'] * 0.99) else "info"
-            w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or
-                                   opt_w >= p['white_noise_level_max'] * 0.99) else "info"
+            l_color = "danger" if (
+                    opt_l <= p['length_scale_min'] * 1.01 or opt_l >= p['length_scale_max'] * 0.99) else "info"
+            w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or opt_w >= p[
+                'white_noise_level_max'] * 0.99) else "info"
 
-            # Create the successful graph card
-            item_to_append = dbc.Col(
-                html.Div([
-                    # Metadata Badge Row
-                    html.Div([
-                        dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
-                        dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
-                        dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
-                    ], style={"textAlign": "center", "marginBottom": "2px"}),
-                    dcc.Graph(
-                        figure=fig,
-                        config={  # type: ignore
-                            'displaylogo': False,
-                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d',
-                                                       'select2d',
-                                                       'zoomIn2d', 'zoomOut2d']
-                        }
-                    ),
-                ], style={"border": "1px solid #eee", "padding": "5px", "borderRadius": "5px"}),
-                width=6, className="px-1 mb-2"  # "px-1" reduces horizontal padding between columns
-            )
+            badges = [
+                dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
+                dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
+                dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
+            ]
+
+            content = dcc.Graph(figure=fig,
+                                config={'displaylogo': False}  # type: ignore
+                                )
+
+            # Fill result for Review Phase
+            res_entry.update({
+                'jd_peak': gp_res["jd_peak"],
+                'jd_peak_std': gp_res["jd_peak_std"],
+                'figure': fig,
+                'badges': badges
+            })
 
         except Exception as e:
-            # --- THE SAFETY NET ---
-            logging.error(f"GP Failure at {jd_min}: {str(e)}")
-            logging.error(traceback.format_exc())
-
             err_id = f"err-gp-{str(jd_min).replace('.', '')}"
+            badges = [dbc.Badge("FAILED", color="danger")]
+            content = html.Div([
+                dbc.Alert([
+                    html.B("GP Fit Failed"),
+                    html.Div(f"Range: {jd_min:.2f}-{jd_max:.2f}", style={"fontSize": "0.7rem"}),
+                    html.Hr(),
+                    html.Div("Hover for error", id=err_id, style={"cursor": "help", "fontSize": "0.8rem"})
+                ], color="danger", className="m-0"),
+                dbc.Tooltip(str(e), target=err_id)
+            ])
 
-            item_to_append = dbc.Col(
-                html.Div([
-                    dbc.Alert([
-                        html.I(className="bi bi-exclamation-octagon me-2"),
-                        html.B("GP Fit Failed"),
-                        html.Div(f"Interval: {jd_min:.2f} - {jd_max:.2f}",
-                                 style={"fontSize": "0.8rem"}),
-                        html.Hr(),
-                        html.Div("Hover for technical details", id=err_id,
-                                 style={"fontSize": "0.7rem", "cursor": "help"})
-                    ], color="danger", style={"height": "400px", "display": "flex",
-                                              "flexDirection": "column", "justifyContent": "center",
-                                              "textAlign": "center"}),
-                    dbc.Tooltip(str(e), target=err_id)
-                ], style={"padding": "5px"}),
-                width=6, className="px-1 mb-2"
-            )
+            res_entry.update({'is_fail': True, 'error': str(e), 'badges': badges, 'content': content})
 
-            # Append whatever we created (Graph or Error Alert)
-
-        live_figs.append(item_to_append)
-
-        # 3. Update the Live UI immediately
+        # Append to Live View
+        live_figs.append(create_interval_card(content, badges, is_fail=res_entry['is_fail']))
+        results_for_storage.append(res_entry)
         set_progress((live_figs, "WAITING"))
 
-    # --- FINAL PHASE ---(Review) --------------
-    # Now we build the "Review Mode" graphs with checkboxes
+    # --- FINAL PHASE (Review) ---
     review_figs = []
-    numeric_data = []  # we do not want to store figures
+    numeric_data = []
 
     for i, res in enumerate(results_for_storage):
-        # Build the Review UI
-        review_figs.append(dbc.Col([
-            html.Div([
-                dbc.Checkbox(id={'type': 'fit-selector', 'index': i}, value=True, label="Keep"),
-                dcc.Graph(figure=res['figure'],
-                          config={  # type: ignore
-                              'displaylogo': False,
-                              'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d']
-                          })  # The saved figure objects
-            ], className="p-2 border rounded")
-        ], width=6))
+        if res['is_fail']:
+            card = create_interval_card(res['content'], res['badges'], is_fail=True,
+                                        checkbox_id={'type': 'fit-selector', 'index': i})
+        else:
+            graph = dcc.Graph(figure=res['figure'],
+                              config={'displaylogo': False}  # type: ignore
+                              )
+            card = create_interval_card(graph, res['badges'], is_fail=False,
+                                        checkbox_id={'type': 'fit-selector', 'index': i})
 
-        # Build the numeric storage (Exclude the 'figure' object!)
-        numeric_data.append({
-            'jd_peak': res['jd_peak'],
-            'jd_peak_std': res['jd_peak_std']
-        })
+            numeric_data.append({
+                'jd_peak': res['jd_peak'],
+                'jd_peak_std': res['jd_peak_std']
+            })
+
+        review_figs.append(card)
 
     return review_figs, "FINISHED", numeric_data
 
@@ -1795,6 +1736,6 @@ if __name__ == '__main__':
     app.run(debug=True,
             port=8052,
             dev_tools_ui=True,  # will pop up a small blue circle in the bottom right of the browser.
-            # If a callback fails, it turns red and you can click it to see the full Python
+            # If a callback fails, it turns red, and you can click it to see the full Python
             # error without even looking at your IDE.
             dev_tools_props_check=True)

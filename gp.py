@@ -4,6 +4,8 @@ import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 from scipy.stats import median_abs_deviation
+plt.rcParams.update({'font.size': 24})  # Set global font size
+
 
 # =========================
 # INPUT PARAMETERS (User defined)
@@ -50,7 +52,7 @@ NOISE_SCALE_DIVISOR = 2
 # Reasonable first guess:
 # - Estimate a typical width of a visible feature
 # - Set length_scale_init ~ feature_width / 2
-LENGTH_SCALE_INIT = 0.054 / 2
+# LENGTH_SCALE_INIT = 0.054 / 2
 
 # =========================
 # Lower bound control
@@ -63,10 +65,11 @@ LENGTH_SCALE_INIT = 0.054 / 2
 #
 # Lower bound control prevents GP from fitting structures smaller than data resolution.
 # If too small -- model overfits noise.
-# SAMPLING_SCALE_FACTOR = 3
-# I've changed my mind. This parameter and 'sampling-based' bounding confuses even me.
-# Let's shift to physical units, user directly see on the graph (abscissa-axis, i.g., JD)
-LENGTH_SCALE_MIN = LENGTH_SCALE_INIT / 10.0
+# Used for a first suugestion only. User can affect the scale bounds directly
+SAMPLING_SCALE_FACTOR = 3
+
+# Helps to calculate initial guess about scale based on the size of the lightcurve piece (along time-axes)
+INTERVAL_DIVISOR = 4    # length_scale_init = duration / LENGTH_SCALE_DIVISOR
 
 # ==========================
 # Upper bound control
@@ -74,11 +77,10 @@ LENGTH_SCALE_MIN = LENGTH_SCALE_INIT / 10.0
 # It controls maximum allowed smoothness
 # We set it depending on initial length_scale:
 # Upper bound = length_scale * LENGTH_SCALE_FACTOR
-# User can tune LENGTH_SCALE_FACTOR
+# User can not tune LENGTH_SCALE_FACTOR
 # Again, increasing LENGTH_SCALE_FACTOR allows the model bahave smoothly
-# LENGTH_SCALE_FACTOR = 2
-# Again, Let's shift to physical units, visible directly by the user:
-LENGTH_SCALE_MAX = LENGTH_SCALE_INIT * 3
+LENGTH_SCALE_FACTOR = 3
+# Used for a first suggestion. User can change scale bounds directly only
 
 
 # ========================
@@ -93,17 +95,17 @@ LENGTH_SCALE_MAX = LENGTH_SCALE_INIT * 3
 # we should constrain the WhiteKernel noise by decreasing WHITE_NOISE_LEVEL_INIT and
 # adjusting WHITE_NOISE_LEVEL_MIN accordingly.
 #
-WHITE_NOISE_LEVEL_INIT = 1e-3
+WHITE_NOISE_LEVEL_INIT = 1e-4
 #
 # Bounds:
 #
 # Minimum allowed value for additional noise (WhiteKernel).
 # Prevents the model from assuming unrealistically perfect data.
-WHITE_NOISE_LEVEL_MIN = 1e-3
+WHITE_NOISE_LEVEL_MIN = 5e-4
 #
 # Maximum allowed value for additional noise.
 # Prevents the model from explaining all variability as noise.
-WHITE_NOISE_LEVEL_MAX = 1
+WHITE_NOISE_LEVEL_MAX = 1e-3
 #
 # The values used here are variances of the normalised flux, so:
 # noise level = 1e-3 corresponds to expected uncertainties of ~0.03 mag
@@ -335,28 +337,51 @@ def residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode):
     return noise_sigma
 
 
+def guess_length_scale(df):
+    total_duration = df['jd'].max() - df['jd'].min()
+
+    # The typical gap between points
+    dt = np.diff(np.sort(df['jd']))
+    sampling_scale = np.median(dt) if len(dt) > 0 else 0.01
+
+    # A good starting point is a part (half?) the window (one "slope" of the feature)
+    length_scale_init = total_duration / INTERVAL_DIVISOR
+
+    # Min: Don't let the GP wiggle faster than our data resolution (Nyquist-ish)
+    length_scale_min = sampling_scale * SAMPLING_SCALE_FACTOR
+
+    # Max: Don't let it get so stiff it can't fit the feature in the window
+    length_scale_max = length_scale_init * LENGTH_SCALE_FACTOR
+
+    # Safety check: ensure min < init < max
+    length_scale_min = min(length_scale_min, length_scale_init * 0.5)
+
+    return {
+        'length_scale_min': length_scale_min,
+        'length_scale_init': length_scale_init,
+        'length_scale_max': length_scale_max
+    }
+
+
 # MAIN GP PIPELINE
 
 
 def gp_peak_pipeline(
-        df: pd.DataFrame,
-        jd_left: float,
-        jd_right: float,
+        frag: pd.DataFrame,
         params,
         n_grid=2000,
         n_samples_uncert=300,
         random_state=0,
         plot_final=False,
+        plot_demo=False
 ) -> dict:
     """
     Fit GP to a fragment and estimate peak position (JD) with uncertainty.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    frag : pd.DataFrame, piece og the lightcurve we are working with
         Must contain 'jd' and 'flux'. May contain 'flux_err'
-    jd_left, jd_right : float
-        Interval to consider (inclusive).
     params : dict
         GP regression parameters:
         - 'guess_sigma' If guess_sigma=True OR no valid errors → use MAD
@@ -374,6 +399,7 @@ def gp_peak_pipeline(
     random_state : int
         Seed for reproducible posterior sampling.
     plot_final  : plot results as matplotlib graph (debug)
+    plot_demo   : GP plot for demonstration (outreach)
 
     Returns
     -------
@@ -393,14 +419,11 @@ def gp_peak_pipeline(
         }
     """
 
-    # --- 1. select fragment ---
-    frag = select_jd_interval(df, jd_left, jd_right)
-    if frag.empty:
-        raise ValueError("No data in the provided JD interval.")
-
     x = frag['jd'].values.copy()
     y = frag['flux'].values.copy()
     z = frag['flux_err'].values.copy()
+    jd_left = frag['jd'].min()
+    jd_right = frag['jd'].max()
 
     # --- 2. Determine Search Mode ---
     # Get mode from params: 'min' or 'max' (default to 'min' as per your UI)
@@ -450,10 +473,6 @@ def gp_peak_pipeline(
 
     y_norm_var = np.var(y_norm)
     print(f'{y_norm_var=:.3f}')
-
-    # sampling scale (from data spacing)
-    dt = np.diff(np.sort(df['jd']))
-    sampling_scale = np.median(dt)
 
     kernel = (
             # ConstantKernel = amplitude (vertical scale) of the GP signal
@@ -520,6 +539,7 @@ def gp_peak_pipeline(
 
     jd_extr = jd_grid.ravel()[idx_extr]
     mean_extr = mean_grid.ravel()[idx_extr]
+    print(f'{jd_extr=:.3f} {mean_extr=:.3f}')
 
     # --- 10. Uncertainty via Posterior Sampling ---
     # Draw samples: (n_points, n_samples)
@@ -535,14 +555,23 @@ def gp_peak_pipeline(
     extr_jds = jd_grid.ravel()[extr_indices]
 
     # Calculate uncertainty (standard deviation of the time of extremum)
+    # This is our old way. I've found this method quite dirty, when regarded samples: they are shaggy!
+    # White kernel makes them jitter, so each sample maximum is maximus of this random "jitter",
+    # while we expect smooth lightcurve. So, we estimate statistics of non-physical local maxima.
+    # This way we probably overestimate time-of-extremum uncertainties
     jd_extr_std = float(np.std(extr_jds))
+    print(f'old way: {jd_extr_std=:.7f}')
 
     # --- 11. Plotting ---
+
     if plot_final:
         # Pass the correct JD and standard deviation to your plotting function
         plot_GP_results(x, y_norm, noise_sigma_norm,
                         jd_extr, mean_extr, extr_jds, None, jd_extr_std,
                         jd_grid, mean_grid, std_grid, n_samples_uncert)
+    if plot_demo:
+        plot_GP_sampling_demo(x, y_norm, noise_sigma_norm, jd_grid,
+                              mean_grid, std_grid, samples, extr_jds, extrema_mode)
 
     return {
         "noise_sigma_norm": noise_sigma_norm,
@@ -557,6 +586,51 @@ def gp_peak_pipeline(
         "gp": gp,
         "extrema_mode": extrema_mode  # Helpful for the frontend to know what it's looking at
     }
+
+
+def plot_GP_sampling_demo(x, y_norm, noise_sigma_norm, jd_grid, mean_grid, std_grid, samples, extr_jds, extrema_mode):
+    """
+    Illustrates the concept of Posterior Sampling.
+    Shows the GP Mean, the uncertainty cloud, and individual realizations.
+    """
+    plt.figure(figsize=(16, 10))
+
+    # 1. Plot Data
+    plt.errorbar(x, y_norm, yerr=noise_sigma_norm, fmt='o', color='black',
+                 alpha=0.4, label='Observations (Normalized)')
+
+    # 2. Plot the GP Mean and Shadow
+    plt.plot(jd_grid, mean_grid, color='tab:blue', lw=3, label='GP Mean (Most Probable)')
+    # plt.fill_between(jd_grid.ravel(),
+    #                  mean_grid - std_grid, mean_grid + std_grid,
+    #                  color='tab:blue', alpha=0.15, label='GP Confidence Interval (±1σ)')
+
+    # 3. Plot individual realizations (The "Realizations")
+    # We plot the first 10 samples to avoid cluttering
+    num_draws = min(5, samples.shape[1])
+    for i in range(num_draws):
+        # label = "Posterior Realizations" if i == 0 else None
+        label = f"Posterior Realization {i}"
+        plt.plot(jd_grid, samples[:, i], lw=1, alpha=0.5, label=label)
+
+        # Mark the extremum of THIS specific realization
+        # This shows why the peak 'moves'
+        if extrema_mode == 'max':
+            idx = np.argmax(samples[:, i])
+        else:
+            idx = np.argmin(samples[:, i])
+        plt.scatter(jd_grid[idx], samples[idx, i], color='red', s=20, zorder=5)
+
+    # 4. Show the distribution of peaks at the bottom
+    # plt.hist(extr_jds, bins=30, density=True, alpha=0.3, color='orange',
+    #          label='Distribution of Extremum Times', bottom=plt.ylim()[0])
+
+    plt.title(f"GP Realisations Demo", fontsize=16)
+    plt.xlabel("JD")
+    plt.ylabel("Normalized Flux")
+    plt.legend(loc='best', fontsize=12)
+    plt.grid(alpha=0.3)
+    plt.show()
 
 
 def main():
@@ -575,22 +649,23 @@ def main():
         for piece in pieces_list:
             jd_min, jd_max = piece[0], piece[-1]
 
-            print(f'Start with {jd_min} : {jd_max} piece')
+            # print(f'Start with {jd_min} : {jd_max} piece')
 
             if len(select_jd_interval(df0, jd_min, jd_max)) < LEN_MIN:
                 continue
 
+            # ---  select fragment ---
+            frag = select_jd_interval(df0, jd_min, jd_max)
+            if frag.empty:
+                raise ValueError("No data in the provided JD interval.")
+            scale = guess_length_scale(frag)
             gp_res = gp_peak_pipeline(
-                df0,
-                jd_min,
-                jd_max,
+                frag,
                 params={
                     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
-                    "length_scale_init": LENGTH_SCALE_INIT,
-                    # "sampling_scale_factor": SAMPLING_SCALE_FACTOR,
-                    # "length_scale_factor": LENGTH_SCALE_FACTOR,
-                    "length_scale_min": LENGTH_SCALE_MIN,
-                    "length_scale_max": LENGTH_SCALE_MAX,
+                    "length_scale_init": scale['length_scale_init'],
+                    "length_scale_min": scale['length_scale_min'],
+                    "length_scale_max": scale['length_scale_max'],
                     "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
                     "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
                     "white_noise_level_max": WHITE_NOISE_LEVEL_MAX,
@@ -598,6 +673,7 @@ def main():
                     "extrema_mode": EXTREMA_MODE
                 },
                 plot_final=True,
+                plot_demo=True
             )
 
             f.write(f'GP peak = {gp_res["jd_peak"]:.6f}  std = {gp_res["jd_peak_std"]:.6f}\n')
