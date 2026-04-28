@@ -189,6 +189,8 @@ import numpy as np
 import traceback
 import logging
 
+from lc_bridge import read_to_volc, pack_volc_to_json, unpack_json_for_plotly, get_flux_fragment
+
 from gp import (
     GUESS_SIGMA, LEN_MIN,
     read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
@@ -198,7 +200,7 @@ from gp import (
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-DEBUG = False
+# DEBUG = False
 
 params_float = {
     "noise_scale_divisor": NOISE_SCALE_DIVISOR,
@@ -501,6 +503,7 @@ sidebar_gp = html.Div([
             id={'type': 'float-input', 'index': "length_scale_min"},
             size="sm",
             type="number", step=0.001,
+            style={"backgroundColor": "rgba(70, 90, 230, 0.12)"},   # Violet, "too short"
             value=params_float["length_scale_min"]), width=4),
         dbc.Col(dbc.Input(
             size="sm",
@@ -511,6 +514,7 @@ sidebar_gp = html.Div([
             size="sm",
             id={'type': 'float-input', 'index': "length_scale_max"},
             type="number", step=0.001,
+            style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},   # red, "too long"
             value=params_float["length_scale_max"]), width=4),
     ], className="g-1 mb-3"),
 
@@ -774,26 +778,44 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
     if not lc_json_string:
         return go.Figure().update_layout(title="Upload data to see plot")
 
-    di = json.loads(lc_json_string)
-    df = pd.DataFrame(data=di['data'], columns=di['columns'])
+    # Get everything pre-calculated from our bridge
+    lc = unpack_json_for_plotly(lc_json_string, view_mode=view_mode)
+    x_data = lc['x']
+    y_data = lc['y']
+    err_data = lc['err']
+
+    # di = json.loads(lc_json_string)
+    # df = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     # Determine Y and Error columns based on view mode
-    y_col = 'mag' if view_mode == 'mag' else 'flux'
-    err_col = 'mag_err'  # Assuming your add_flux or read_lc provides this
+    # y_col = 'mag' if view_mode == 'mag' else 'flux'
+    # err_col = 'mag_err'  # Assuming your add_flux or read_lc provides this
 
-    x_data = df['jd']
-    y_data = df[y_col]
+    # x_data = df['jd']
+    # y_data = df[y_col]
 
     # Check if error bars exist in the dataframe
+    # error_y_logic = None
+    # if err_col in df.columns:
+    #     error_y_logic = dict(
+    #         type='data',
+    #         array=df[err_col],
+    #         visible=True,
+    #         thickness=1,
+    #         width=0,  # Set to 0 to avoid "crossbar" clutter on dense LC
+    #         color='rgba(100, 100, 100, 0.3)'  # Subtle grey
+    #     )
+
+    # Error bars logic
     error_y_logic = None
-    if err_col in df.columns:
+    if err_data is not None:
         error_y_logic = dict(
             type='data',
-            array=df[err_col],
+            array=err_data,
             visible=True,
             thickness=1,
-            width=0,  # Set to 0 to avoid "crossbar" clutter on dense LC
-            color='rgba(100, 100, 100, 0.3)'  # Subtle grey
+            width=0,
+            color='rgba(100, 100, 100, 0.3)'    # Subtle grey
         )
 
     x_label = "Julian Date (JD)"
@@ -804,7 +826,7 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
 
     fig = go.Figure()
 
-    # 1. Main Data Trace with Error Bars
+    # Main data trace with error bars
     fig.add_trace(go.Scatter(
         x=x_data, y=y_data,
         mode='markers',
@@ -824,24 +846,29 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
         name="Data"
     ))
 
-    # 2. Layout with UI Revision
+    # Layout with UI Revision
     fig.update_layout(
         xaxis_title=x_label,
-        yaxis_title="Magnitude" if view_mode == 'mag' else "Flux",
-        yaxis_autorange='reversed' if view_mode == 'mag' else True,
+        yaxis_title=lc['y_label'],
+        yaxis_autorange='reversed' if lc['is_mag'] else True,
+        # xaxis_title=x_label,
+        # yaxis_title="Magnitude" if view_mode == 'mag' else "Flux",
+        # yaxis_autorange='reversed' if view_mode == 'mag' else True,
         margin=dict(l=10, r=10, t=20, b=40),
         template="plotly_white",
-        dragmode='pan',
+        # dragmode='pan',
+        dragmode='zoom',
         selectdirection='h',
         # --- THE FIX FOR ZOOM RESET ---
         # Using lc_json_string means zoom only resets when a NEW file is uploaded.
         # Adding an interval won't trigger a reset.
-        uirevision=lc_json_string,
+        # uirevision=[lc_json_string, view_mode],  # when we should update layout
+        uirevision=f"{lc_json_string}_{view_mode}",  # when we should update layout
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
     )
 
-    # 3. Mark selected intervals
+    # Mark selected intervals
     if intervals_data:
         for interval in intervals_data:
             fig.add_vrect(
@@ -874,19 +901,26 @@ def upload_lc(contents, filename):
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
-        df = read_lc(io.BytesIO(decoded))
-        df = add_flux(df)
+
+        # Use Bridge to get the Science Object
+        # We can pass io.BytesIO(decoded) beacuse it works for Table.read, we use in the Bridge
+        volc = read_to_volc(io.BytesIO(decoded))
+        lc_json_string = pack_volc_to_json(volc)
+
+        # df = read_lc(io.BytesIO(decoded))
+        # df = add_flux(df)
 
         # Serialise to JSON for dcc.Store
-        lc = df.to_dict(orient='split', index=False)
-        lc_data = json.dumps(lc)
+        # lc = df.to_dict(orient='split', index=False)
+        # lc_data = json.dumps(lc)
         # --- UI Success Feedback ---
         new_label = html.Div([
             html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
             html.Span(f"{filename}", style={"fontSize": "0.9rem", "fontWeight": "bold"})
         ])
 
-        return lc_data, new_label
+        # return lc_data, new_label
+        return lc_json_string, new_label
 
     except Exception as e:
         # 1. Detailed Console Logging
@@ -1064,12 +1098,13 @@ def update_GP_scale(intervals, lc_json_string):
         return dash.no_update, dash.no_update, dash.no_update
 
     di = json.loads(lc_json_string)
-    df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
+    # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     # Search for the first interval that actually contains enough data points
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[-1]
-        frag = select_jd_interval(df_lc, jd_min, jd_max)
+        # frag = select_jd_interval(df_lc, jd_min, jd_max)
+        frag = get_flux_fragment(lc_json_string, jd_min, jd_max)
 
         if len(frag) >= LEN_MIN:
             scale = guess_length_scale(frag)
@@ -1082,44 +1117,6 @@ def update_GP_scale(intervals, lc_json_string):
     return dash.no_update, dash.no_update, dash.no_update
 
 
-# @app.callback(
-#     Output({'type': 'float-input', 'index': 'length_scale_min'}, 'value', allow_duplicate=True),
-#     Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
-#     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
-#     Input('store-intervals-data', 'data'),
-#     State('store-lc-data', 'data'),
-#     prevent_initial_call=True
-# )
-# def update_GP_scale(intervals, lc_json_string):
-#     print('update_GP_scale')
-#     if not lc_json_string or not intervals:
-#         return dash.no_update, dash.no_update, dash.no_update
-#     if len(intervals) == 0:
-#         return dash.no_update, dash.no_update, dash.no_update
-#
-#     di = json.loads(lc_json_string)
-#     df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
-#
-#     if len(df_lc) == 0:
-#
-#         return dash.no_update, dash.no_update, dash.no_update
-#
-#     for piece in intervals:
-#         jd_min, jd_max = piece[0], piece[-1]
-#
-#         if len(select_jd_interval(df_lc, jd_min, jd_max)) < LEN_MIN:
-#             continue
-#         frag = select_jd_interval(df_lc, jd_min, jd_max)
-#         if frag.empty:
-#             continue
-#         scale = guess_length_scale(frag)
-#         # return scale on the first valid interval
-#         return scale['length_scale_min'], scale['length_scale_init'],  scale['length_scale_max']
-#
-#     return dash.no_update, dash.no_update, dash.no_update
-
-
-# ------- graphical interval selection
 @app.callback(
     # region infold
     Output('store-intervals-data', 'data', allow_duplicate=True),
@@ -1493,31 +1490,29 @@ def create_gp_plot(gp_res, jd_max_guess=None):
 )
 def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, ids, float_values):
     set_progress(([], "WAITING"))
+    print('run_gp:')
+    print(f'{ids=}')
+    print(f'{float_values=}')
     p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
     p['extrema_mode'] = extrema_mode
 
     # 1. Validation: Ensure files are loaded
-    if DEBUG:
-        from gp import FILENAME_IN, INTERVALS_FILE, load_intervals_from_file
-        intervals = load_intervals_from_file(INTERVALS_FILE)
-        df_lc = read_lc(FILENAME_IN)
-        df_lc = add_flux(df_lc)
-    else:
-        if not lc_json_string or not intervals:
-            error_alert = dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
-            return error_alert, "FINISHED", None
-            # return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
-        di = json.loads(lc_json_string)
-        df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
+    if not lc_json_string or not intervals:
+        error_alert = dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
+        return error_alert, "FINISHED", None
+        # return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
+    # di = json.loads(lc_json_string)
+    # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     results_for_storage = []  # We now store EVERYTHING here
     live_figs = []
 
     for i, piece in enumerate(intervals):
         jd_min, jd_max = piece[0], piece[-1]
-        frag = select_jd_interval(df_lc, jd_min, jd_max)
+        frag = get_flux_fragment(lc_json_string, jd_min, jd_max)
+        # frag = select_jd_interval(df_lc, jd_min, jd_max)
 
         if len(frag) < LEN_MIN:
             continue
@@ -1533,8 +1528,16 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
             opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
             opt_w = optimized_params.get('k2__noise_level', 0.0)
 
-            l_color = "danger" if (
-                    opt_l <= p['length_scale_min'] * 1.01 or opt_l >= p['length_scale_max'] * 0.99) else "info"
+            # l_color = "danger" if (
+            #         opt_l <= p['length_scale_min'] * 1.01 or opt_l >= p['length_scale_max'] * 0.99) else "info"
+            if opt_l <= p['length_scale_min'] * 1.01:
+                l_color = "indigo"  # too short
+            elif opt_l >= p['length_scale_max'] * 0.99:
+                l_color = "danger"  # red, too long
+            else:
+                l_color = "success"
+            # l_color = "blue" if (
+            #         opt_l <= p['length_scale_min'] * 1.01) elif or opt_l >= p['length_scale_max'] * 0.99) else "info"
             w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or opt_w >= p[
                 'white_noise_level_max'] * 0.99) else "info"
 

@@ -4,8 +4,8 @@ import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 from scipy.stats import median_abs_deviation
-plt.rcParams.update({'font.size': 24})  # Set global font size
 
+plt.rcParams.update({'font.size': 24})  # Set global font size
 
 # =========================
 # INPUT PARAMETERS (User defined)
@@ -69,7 +69,7 @@ NOISE_SCALE_DIVISOR = 2
 SAMPLING_SCALE_FACTOR = 3
 
 # Helps to calculate initial guess about scale based on the size of the lightcurve piece (along time-axes)
-INTERVAL_DIVISOR = 4    # length_scale_init = duration / LENGTH_SCALE_DIVISOR
+INTERVAL_DIVISOR = 4  # length_scale_init = duration / LENGTH_SCALE_DIVISOR
 
 # ==========================
 # Upper bound control
@@ -474,27 +474,16 @@ def gp_peak_pipeline(
     y_norm_var = np.var(y_norm)
     print(f'{y_norm_var=:.3f}')
 
+    # ConstantKernel = amplitude (vertical scale) of the GP signal
+    # constant_value=1.0 because we work with normalised fluxes
     kernel = (
-            # ConstantKernel = amplitude (vertical scale) of the GP signal
-            # constant_value=1.0 because we work with normalised fluxes
-            ConstantKernel(
-                constant_value=1.0,
-                constant_value_bounds=(y_norm_var * 0.01, y_norm_var * 100.0)
-            ) *
+            ConstantKernel(constant_value=1.0,
+                           constant_value_bounds=(y_norm_var * 0.01, y_norm_var * 100.0)) *
             Matern(length_scale=length_scale,
-                   # length_scale_bounds=(
-                   #     sampling_scale * params['sampling_scale_factor'],
-                   #     length_scale * params['length_scale_factor']
-                   # ),
-                   length_scale_bounds=(
-                       params['length_scale_min'], params['length_scale_max']
-                   ),
+                   length_scale_bounds=(params['length_scale_min'], params['length_scale_max']),
                    nu=2.5) +
-            WhiteKernel(
-                noise_level=params['white_noise_level_init'],
-                noise_level_bounds=(params['white_noise_level_min'], params['white_noise_level_max']
-                )
-            )
+            WhiteKernel(noise_level=params['white_noise_level_init'],
+                        noise_level_bounds=(params['white_noise_level_min'], params['white_noise_level_max']))
     )
 
     print('Start Gaussian Process')
