@@ -436,10 +436,10 @@ class VOLightCurve:
                     # Just ensure we are at the start of the "file"
                     file_path.seek(0)
                     votable_tree = votparse.readRaw(file_path)
-            else:
-                # It's a string path, we need to open it
-                with open(file_path, "rb") as f:
-                    votable_tree = votparse.readRaw(f)
+                else:
+                    # It's a string path, we need to open it
+                    with open(file_path, "rb") as f:
+                        votable_tree = votparse.readRaw(f)
 
                 # and yet I don't trust you:
                 self.table = _promote_to_vo_standards(self.table)
@@ -607,12 +607,13 @@ def print_col_ucd(lc: VOLightCurve):
 def main():
     for filename in [
         # 'data/lc_tess_HD182144_TIC_406949643_sector__40_author__SPOC_methods__pdcsap.vot',
+        'data/lc_tess_HD182144_TIC_406949643_sector__40_author__SPOC_methods__pdcsap.ecsv'
         # 'data/OGLE-SMC-CEP-0325-I.vot',
         # 'data/6009363278148078848-G.vot',
         # 'data/AY_Lac-R.vot',
         # 'data/g2_jk.vot',
         # 'data/my_g3.vot',
-        'data/ASas19pm.dat'
+        # 'data/ASas19pm.dat'
     ]:
         print(f'\n\n\n Ingesting {filename}')
         lc = VOLightCurve(file_path=filename)

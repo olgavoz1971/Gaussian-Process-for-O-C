@@ -175,7 +175,6 @@ Specifically the `GaussianProcessRegressor` module.
 
 import dash
 import diskcache
-import pandas as pd
 import json
 from dash import dcc, html, Input, Output, State, ALL, DiskcacheManager
 import dash_bootstrap_components as dbc
@@ -189,13 +188,15 @@ import numpy as np
 import traceback
 import logging
 
-from lc_bridge import read_to_volc, pack_volc_to_json, unpack_json_for_plotly, get_flux_fragment
+from lc_bridge import (read_to_volc, pack_volc_to_json, unpack_json_for_plotly,
+                       get_flux_fragment, get_intervals_from_phase)
 
 from gp import (
     GUESS_SIGMA, LEN_MIN,
-    read_lc, load_intervals, add_flux, select_jd_interval, gp_peak_pipeline,
+    load_intervals, gp_peak_pipeline,
     NOISE_SCALE_DIVISOR,
-    WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX, EXTREMA_MODE, guess_length_scale
+    # WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX,
+    KERNEL_TYPE, EXTREMA_MODE, guess_length_scale
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -207,9 +208,9 @@ params_float = {
     "length_scale_init": 0.1,  # we estimate actual values after setting intervals
     "length_scale_min": 0.01,
     "length_scale_max": 1,
-    "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
-    "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
-    "white_noise_level_max": WHITE_NOISE_LEVEL_MAX
+    # "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
+    # "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
+    # "white_noise_level_max": WHITE_NOISE_LEVEL_MAX
 }
 # Initialize Diskcache for background callbacks
 cache = diskcache.Cache("./cache")
@@ -226,14 +227,14 @@ app = dash.Dash(__name__,
 
 # ==================== Layout utils ===================
 
-def create_float_input(label, default_val, tooltip_text, index, step=1.0):
-    """Helper to create labelled float inputs with tooltips."""
-    return html.Div([
-        dbc.Label(label, id=f"label-{index}"),
-        dbc.Tooltip(tooltip_text, target=f"label-{index}"),
-        dbc.Input(id={'type': 'float-input', 'index': index},
-                  type="number", value=default_val, step=step),
-    ], className="mb-2")
+# def create_float_input(label, default_val, tooltip_text, index, step=1.0):
+#     """Helper to create labelled float inputs with tooltips."""
+#     return html.Div([
+#         dbc.Label(label, id=f"label-{index}"),
+#         dbc.Tooltip(tooltip_text, target=f"label-{index}"),
+#         dbc.Input(id={'type': 'float-input', 'index': index},
+#                   type="number", value=default_val, step=step),
+#     ], className="mb-2")
 
 
 def LegendItem(color, label, mode='line'):
@@ -475,45 +476,66 @@ sidebar_gp = html.Div([
     html.Hr(className="my-2"),
 
     # 4. KERNEL PARAMETERS (Compact Triples)
-    html.Label("White Kernel (Min / Val /  Max)", className="small fw-bold", id='wk-label'),
-    dbc.Tooltip("Extra noise allowance", target='wk-label'),
-    dbc.Row([
-        dbc.Col(dbc.Input(
-            id={'type': 'float-input', 'index': "white_noise_level_min"},
-            size="sm",
-            type="number", step=0.001,
-            value=params_float["white_noise_level_min"]), width=4),
-        dbc.Col(dbc.Input(
-            id={'type': 'float-input', 'index': "white_noise_level_init"},
-            size="sm",
-            type="number", step=0.001,
-            value=params_float["white_noise_level_init"]), width=4),
-        dbc.Col(dbc.Input(
-            id={'type': 'float-input', 'index': "white_noise_level_max"},
-            size="sm",
-            type="number", step=0.001,
-            value=params_float["white_noise_level_max"]), width=4),
-    ]),
+    # Kernel Selection
+    html.Label("Kernel Smoothness Type", className="small fw-bold", id="kernel-type-label"),
+    dbc.Tooltip("Matern (nu=2.5): twice differentiable, physically realistic"
+                "RBF (Radial Basis Function): infinitely differentiable, extremely smooth)",
+                target='kernel-type-label'),
+    dbc.RadioItems(
+        id='kernel-type',
+        options=[   # type: ignore
+            {"label": "Matern 2.5", "value": "matern"},
+            {"label": "RBF", "value": "rbf"},
+        ],
+        value=KERNEL_TYPE,
+        inline=True,
+        className="mb-3 small",
+        style={"fontSize": "0.85rem"}
+    ),
 
-    html.Label("Length Scale ( Min / Val / Max)", className="small fw-bold", id='ls-label'),
+    # html.Label("White Kernel (Min / Val /  Max)", className="small fw-bold", id='wk-label'),
+    # dbc.Tooltip("Extra noise allowance", target='wk-label'),
+    # dbc.Row([
+    #     dbc.Col(dbc.Input(
+    #         id={'type': 'float-input', 'index': "white_noise_level_min"},
+    #         size="sm",
+    #         type="number", step=0.001,
+    #         value=params_float["white_noise_level_min"]), width=4),
+    #     dbc.Col(dbc.Input(
+    #         id={'type': 'float-input', 'index': "white_noise_level_init"},
+    #         size="sm",
+    #         type="number", step=0.001,
+    #         value=params_float["white_noise_level_init"]), width=4),
+    #     dbc.Col(dbc.Input(
+    #         id={'type': 'float-input', 'index': "white_noise_level_max"},
+    #         size="sm",
+    #         type="number", step=0.001,
+    #         value=params_float["white_noise_level_max"]), width=4),
+    # ]),
+
+    # Length Scale Inputs
+    html.Label("Length Scale (Min / Val / Max)", className="small fw-bold", id='ls-label'),
     dbc.Tooltip("GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
                 "decrease if it misses structure.", target='ls-label'),
+    # lll
     dbc.Row([
         dbc.Col(dbc.Input(
             id={'type': 'float-input', 'index': "length_scale_min"},
             size="sm",
-            type="number", step=0.001,
+            type="number", step="any",
             style={"backgroundColor": "rgba(70, 90, 230, 0.12)"},   # Violet, "too short"
             value=params_float["length_scale_min"]), width=4),
         dbc.Col(dbc.Input(
             size="sm",
             id={'type': 'float-input', 'index': "length_scale_init"},
-            type="number", step=0.001,
+            type="number",
+            # step=0.001,
+            step="any",
             value=params_float["length_scale_init"]), width=4),
         dbc.Col(dbc.Input(
             size="sm",
             id={'type': 'float-input', 'index': "length_scale_max"},
-            type="number", step=0.001,
+            type="number", step="any",
             style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},   # red, "too long"
             value=params_float["length_scale_max"]), width=4),
     ], className="g-1 mb-3"),
@@ -597,6 +619,7 @@ app.layout = dbc.Container([
     dcc.Store(id='store-lc-data'),
     dcc.Store(id='store-intervals-data'),
     dcc.Store(id='store-active-intervals-name', data="Drag or Select"),
+    dcc.Store(id='calc-trigger', data=0),   # A simple counter, trigger for scale recalculation
 
     # --- 2. GLOBAL DATA HUB
 
@@ -768,13 +791,13 @@ def toggle_gp_legend(n_clicks, is_open):
     Input('store-lc-data', 'data'),
     Input('store-intervals-data', 'data'),
     Input('folding-switch', 'value'),
-    Input('input-period', 'value'),
-    Input('input-epoch', 'value'),
     Input('view-mode-radio', 'value'),
+    State('input-period', 'value'),
+    State('input-epoch', 'value'),
     # State('prep-graph', 'relayoutData')  # Optional?
     # endregion
 )
-def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch, view_mode):
+def update_prep_graph(lc_json_string, intervals_data, folding_on, view_mode, period, epoch):
     if not lc_json_string:
         return go.Figure().update_layout(title="Upload data to see plot")
 
@@ -783,28 +806,6 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
     x_data = lc['x']
     y_data = lc['y']
     err_data = lc['err']
-
-    # di = json.loads(lc_json_string)
-    # df = pd.DataFrame(data=di['data'], columns=di['columns'])
-
-    # Determine Y and Error columns based on view mode
-    # y_col = 'mag' if view_mode == 'mag' else 'flux'
-    # err_col = 'mag_err'  # Assuming your add_flux or read_lc provides this
-
-    # x_data = df['jd']
-    # y_data = df[y_col]
-
-    # Check if error bars exist in the dataframe
-    # error_y_logic = None
-    # if err_col in df.columns:
-    #     error_y_logic = dict(
-    #         type='data',
-    #         array=df[err_col],
-    #         visible=True,
-    #         thickness=1,
-    #         width=0,  # Set to 0 to avoid "crossbar" clutter on dense LC
-    #         color='rgba(100, 100, 100, 0.3)'  # Subtle grey
-    #     )
 
     # Error bars logic
     error_y_logic = None
@@ -827,7 +828,7 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
     fig = go.Figure()
 
     # Main data trace with error bars
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=x_data, y=y_data,
         mode='markers',
         selectedpoints=None,
@@ -835,7 +836,7 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
         unselected=dict(marker=dict(opacity=0.7, color='blue')),
         # Define how they look when they ARE in a box (while dragging)
         selected=dict(marker=dict(opacity=1.0, color='green')),
-        error_y=error_y_logic,  # <--- Error bars added here
+        # error_y=error_y_logic,  # <--- Error bars added here  this is very heavy thing to send to and from
         hoverinfo='none',
         marker=dict(
             size=4,
@@ -859,11 +860,10 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, period, epoch,
         # dragmode='pan',
         dragmode='zoom',
         selectdirection='h',
-        # --- THE FIX FOR ZOOM RESET ---
         # Using lc_json_string means zoom only resets when a NEW file is uploaded.
         # Adding an interval won't trigger a reset.
         # uirevision=[lc_json_string, view_mode],  # when we should update layout
-        uirevision=f"{lc_json_string}_{view_mode}",  # when we should update layout
+        uirevision=f"{lc_json_string}_{view_mode}_{folding_on}",  # when we should update layout
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
     )
@@ -1089,15 +1089,16 @@ def clear_all_intervals(n_clicks):
     Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
     Input('store-intervals-data', 'data'),
+    Input('calc-trigger', 'data'),  # Also triggered by Reset Button
     State('store-lc-data', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def update_GP_scale(intervals, lc_json_string):
+def update_GP_scale(intervals, trigger_clicks, lc_json_string):
     if not lc_json_string or not intervals:
         return dash.no_update, dash.no_update, dash.no_update
 
-    di = json.loads(lc_json_string)
+    # di = json.loads(lc_json_string)
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     # Search for the first interval that actually contains enough data points
@@ -1113,52 +1114,96 @@ def update_GP_scale(intervals, lc_json_string):
                 round(scale['length_scale_init'], 6),
                 round(scale['length_scale_max'], 6)
             )
-
     return dash.no_update, dash.no_update, dash.no_update
 
 
 @app.callback(
-    # region infold
+    # region unfold
     Output('store-intervals-data', 'data', allow_duplicate=True),
+    Output('folding-switch', 'value'),
     Input('btn-add-interval', 'n_clicks'),
     State('prep-graph', 'selectedData'),
     State('store-intervals-data', 'data'),
-    State('folding-switch', 'value'),  # We need to know if we are in Phase or JD!
+    State('folding-switch', 'value'),   # we handle selection on a folded curve
+    State('input-period', 'value'),     # we bring phase interval into jd-space
+    State('input-epoch', 'value'),
+    State('store-lc-data', 'data'),  # We need this to get JD span
     prevent_initial_call=True
     # endregion
 )
-def add_selection_to_registry(n_clicks, selected_data, current_intervals, folding_on):
-    if not n_clicks or not selected_data:
-        return dash.no_update
+def add_selection_to_registry(n_clicks, selected_data, current_intervals, folding_on, period, epoch, lc_json):
+    if not n_clicks or not selected_data or 'range' not in selected_data:
+        return dash.no_update, dash.no_update
 
-    # 1. Extract the X-range from the selection
-    # SelectedData contains 'range': {'x': [min, max]}
-    if 'range' in selected_data:
-        x_min, x_max = selected_data['range']['x']
+    x_min, x_max = selected_data['range']['x']
+    updated_list = current_intervals or []
+    # updated_list = current_intervals if current_intervals else []
 
-        # BETA-TESTER WARNING:
-        # If folding is ON, x_min/max are PHASES (0-1).
-        # If folding is OFF, they are JD.
-        # For now, let's assume the user selects in JD (unfolded) mode.
-        if folding_on:
-            # We might want to warn the user or handle phase-to-jd conversion later
-            return dash.no_update
+    if folding_on:
+        # --- phase to jd logic ---
+        if not period or period <= 0:
+            return dash.no_update, dash.no_update   # Need a valid period
 
-            # 2. Append to our list
+        new_intervals = get_intervals_from_phase(
+            lc_json, x_min, x_max, period, epoch
+        )
+        for interval in new_intervals:
+            if interval not in updated_list:
+                updated_list.append(interval)
+
+    else:
+        # --- standard jd selection ---
         new_interval = [round(x_min, 6), round(x_max, 6)]
-
-        # current_intervals is usually a list of lists: [[start1, end1], [start2, end2]]
-        updated_list = current_intervals if current_intervals else []
-
-        # Prevent exact duplicates
         if new_interval not in updated_list:
             updated_list.append(new_interval)
-            # Sort by JD start time
-            updated_list.sort(key=lambda x: x[0])
 
-        return updated_list
+    # Final cleanup
+    updated_list.sort(key=lambda x: x[0])
+    return updated_list, False      # force lightcurve unfolding
 
-    return dash.no_update
+
+# @app.callback(
+#     # region infold
+#     Output('store-intervals-data', 'data', allow_duplicate=True),
+#     Input('btn-add-interval', 'n_clicks'),
+#     State('prep-graph', 'selectedData'),
+#     State('store-intervals-data', 'data'),
+#     State('folding-switch', 'value'),  # We need to know if we are in Phase or JD!
+#     prevent_initial_call=True
+#     # endregion
+# )
+# def add_selection_to_registry_back(n_clicks, selected_data, current_intervals, folding_on):
+#     if not n_clicks or not selected_data:
+#         return dash.no_update
+#
+#     # 1. Extract the X-range from the selection
+#     # SelectedData contains 'range': {'x': [min, max]}
+#     if 'range' in selected_data:
+#         x_min, x_max = selected_data['range']['x']
+#
+#         # BETA-TESTER WARNING:
+#         # If folding is ON, x_min/max are PHASES (0-1).
+#         # If folding is OFF, they are JD.
+#         # For now, let's assume the user selects in JD (unfolded) mode.
+#         if folding_on:
+#             # We might want to warn the user or handle phase-to-jd conversion later
+#             return dash.no_update
+#
+#             # 2. Append to our list
+#         new_interval = [round(x_min, 6), round(x_max, 6)]
+#
+#         # current_intervals is usually a list of lists: [[start1, end1], [start2, end2]]
+#         updated_list = current_intervals if current_intervals else []
+#
+#         # Prevent exact duplicates
+#         if new_interval not in updated_list:
+#             updated_list.append(new_interval)
+#             # Sort by JD start time
+#             updated_list.sort(key=lambda x: x[0])
+#
+#         return updated_list
+#
+#     return dash.no_update
 
 
 # ------- interval registry stuff ----
@@ -1345,7 +1390,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # endregion
 
     # 1. Data Points: Custom hover format
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(     # go.Dcattergl is much mire faster than go.Scatter
         # region unfold me
         x=x, y=y,
         mode='markers',
@@ -1362,7 +1407,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     ))
 
     # 2. GP Mean: Custom hover format
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=x_grid, y=y_mean,
         mode='lines',
         line=dict(color='rgb(31, 119, 180)', width=2),
@@ -1376,7 +1421,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # 3. GP Confidence Interval (±1σ)
     # hover info is hidden
     # Plotly trick: Create a continuous boundary by reversing the lower bound
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=np.concatenate([x_grid, x_grid[::-1]]),
         y=np.concatenate([y_mean + y_std, (y_mean - y_std)[::-1]]),
         fill='toself',
@@ -1389,7 +1434,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
 
     # 4. Posterior-sampled maxima (Alpha blending)
     # hover info is hidden
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=peaks_jd,
         y=np.full_like(peaks_jd, 0.98 * mean_peak),
         mode='markers',
@@ -1474,6 +1519,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     State('store-intervals-data', 'data'),
     State('guess-sigma', 'value'),
     State('extrema-mode', 'value'),
+    State('kernel-type', 'value'),
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
     background=True,
@@ -1488,15 +1534,27 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     prevent_initial_call=True
     # endregion
 )
-def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, ids, float_values):
+def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, kernel_type, ids, float_values):
     set_progress(([], "WAITING"))
     print('run_gp:')
-    print(f'{ids=}')
-    print(f'{float_values=}')
-    p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
+    # print(f'{ids=}')
+    # print(f'{float_values=}')
+    # Use a safe conversion with a fallback to the default
+    p = {}
+    for val_id, val in zip(ids, float_values):
+        key = val_id['index']
+        try:
+            # If val is None or empty, float(val) fails.
+            # We fall back to the constant default.
+            p[key] = float(val) if val is not None else params_float[key]
+        except (ValueError, TypeError):
+            p[key] = params_float[key]
+    # p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
     p['extrema_mode'] = extrema_mode
+    p['kernel_type'] = kernel_type
+    print(p)
 
     # 1. Validation: Ensure files are loaded
     if not lc_json_string or not intervals:
@@ -1512,6 +1570,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     for i, piece in enumerate(intervals):
         jd_min, jd_max = piece[0], piece[-1]
         frag = get_flux_fragment(lc_json_string, jd_min, jd_max)
+        logging.info(f'{len(frag)=}')
         # frag = select_jd_interval(df_lc, jd_min, jd_max)
 
         if len(frag) < LEN_MIN:
@@ -1524,27 +1583,36 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
             fig = create_gp_plot(gp_res)
 
             # Extract kernel params for badges
-            optimized_params = gp_res['gp'].kernel_.get_params()
-            opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
-            opt_w = optimized_params.get('k2__noise_level', 0.0)
+            # optimized_params = gp_res['gp'].kernel_.get_params()
+            k_obj = gp_res['gp'].kernel_
+            # k1 is ConstantKernel, k2 is Matern/RBF
+            opt_ampl = k_obj.k1.constant_value
+            opt_l = k_obj.k2.length_scale
 
-            # l_color = "danger" if (
-            #         opt_l <= p['length_scale_min'] * 1.01 or opt_l >= p['length_scale_max'] * 0.99) else "info"
+            # opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
+            # opt_w = optimized_params.get('k2__noise_level', 0.0)
+
+            # Colour logic for Length Scale
             if opt_l <= p['length_scale_min'] * 1.01:
                 l_color = "indigo"  # too short
             elif opt_l >= p['length_scale_max'] * 0.99:
                 l_color = "danger"  # red, too long
             else:
                 l_color = "success"
-            # l_color = "blue" if (
-            #         opt_l <= p['length_scale_min'] * 1.01) elif or opt_l >= p['length_scale_max'] * 0.99) else "info"
-            w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or opt_w >= p[
-                'white_noise_level_max'] * 0.99) else "info"
+
+            # Amplitude badge (Replaces White Noise)
+            # If amplitude hits the "Goldilocks" bounds,
+            # maybe colour it yellow to warn the user
+            amp_color = "info" if (0.01 < opt_ampl < 10.0) else "warning"
+            # w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or opt_w >= p[
+            #     'white_noise_level_max'] * 0.99) else "info"
 
             badges = [
+                dbc.Badge(f"Kernel: {kernel_type.upper()}", color="dark", className="me-1"),
                 dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
-                dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
-                dbc.Badge(f"σ: {gp_res['jd_peak_std']:.4f}", color="secondary"),
+                dbc.Badge(f"Amp: {opt_ampl:.3f}", color=amp_color, className="me-1"),
+                # dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
+                dbc.Badge(f"σ_t: {gp_res['jd_peak_std']:.4f}", color="secondary"),
             ]
 
             content = dcc.Graph(figure=fig,
@@ -1608,21 +1676,24 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     # region unfold me
     Output({'type': 'float-input', 'index': ALL}, 'value'),
     Output('guess-sigma', 'value'),
+    Output('kernel-type', 'value'),
+    Output('calc-trigger', 'data'),     # Trigger scale recalculation
     Input('reset-btn', 'n_clicks'),
     State({'type': 'float-input', 'index': ALL}, 'id'),
+    State('calc-trigger', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def reset_params(n_clicks, ids):
+def reset_params(n_clicks, ids, current_trigger):
     if n_clicks is None:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     # 1. Reset floats from the dictionary
     float_resets = [str(params_float[val_id['index']]) for val_id in ids]
     # Create a list of return values based on the 'index' stored in the ID
     # This pulls directly from your global 'params_float' dictionary
     # 2. Reset the boolean to your default constant
-    return float_resets, GUESS_SIGMA
+    return float_resets, GUESS_SIGMA, KERNEL_TYPE, current_trigger + 1
 
 
 # ---- Download results logic

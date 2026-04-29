@@ -167,21 +167,33 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
     # Array indices: 0=time, 1=value, 2=error, 3=flag
     data = np.array(packet['data'], dtype=object)
 
-    t = data[:, 0].astype(float)
-    v = data[:, 1].astype(float)
+    # Raw extraction
+    t_raw = data[:, 0].astype(float)
+    v_raw = data[:, 1].astype(float)
+
+    # Cleansing (particularly important for TESS lightcurves)
+    valid_mask = ~np.isnan(t_raw) & ~np.isnan(v_raw)
+    t = t_raw[valid_mask]
+    v = v_raw[valid_mask]
+
     # Handle the 'None' in errors safely
-    e_raw = data[:, 2]
+    e_raw = data[valid_mask, 2] # Apply mask to row indexing
     has_err = packet['schema']['error'] is not None
     e = e_raw.astype(float) if has_err else None
 
-    f = data[:, 3] # Keep flags as objects/strings
+    # e_raw = data[:, 2]
+    # has_err = packet['schema']['error'] is not None
+    # e = e_raw.astype(float) if has_err else None
 
-    # Apply JD0
-    # jd0 = meta.get('jd0', 0)
-    # if jd0:
-    #     t += jd0
+    f = data[valid_mask, 3]     # Apply mask, keep flags as objects/strings
+    # f = data[:, 3]
 
-    # 2. Domain Logic
+    # apply JD0
+    jd0 = meta.get('jd0', 0)
+    if jd0:
+        t += jd0
+
+    # Domain Logic
     current_domain = meta['active_domain']
     y_data = v
     e_data = e
@@ -228,7 +240,7 @@ def get_flux_fragment(json_str: str, jd_min: float, jd_max: float) -> pd.DataFra
     # We force view_mode='flux' so the bridge handles the math
     lc = unpack_json_for_plotly(json_str, view_mode='flux')
 
-    # 2. Build the DataFrame
+    # Build the DataFrame
     df = pd.DataFrame({
         'jd': lc['x'],
         'flux': lc['y'],
@@ -239,7 +251,76 @@ def get_flux_fragment(json_str: str, jd_min: float, jd_max: float) -> pd.DataFra
     mask = (df['jd'] >= jd_min) & (df['jd'] <= jd_max)
     frag = df[mask].copy()
 
+    # Drop any row where flux is NaN (FOR TESS!)
+    frag = frag.dropna(subset=['jd', 'flux'])
+
     return frag
+
+
+def get_jd_limits(json_str):
+    """Safe extraction of absolute JD boundaries from the JSON transport."""
+    packet = json.loads(json_str)
+    # Our 'data' array always has JD at index 0
+    times = [row[0] for row in packet['data']]
+    jd0 = packet['meta'].get('jd0', 0)
+    return min(times) + jd0, max(times) + jd0
+
+
+def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: float, epoch=None):
+    """
+    High-level 'Beast' method:
+    Converts a phase selection into JD intervals by looking at the data span.
+    """
+    jd_start, jd_end = get_jd_limits(json_str)
+    t0 = epoch if epoch is not None else jd_start
+
+    # Cycle detection
+    e_start = np.floor((jd_start - t0) / period)
+    e_end = np.ceil((jd_end - t0) / period)
+
+    intervals = []
+    for e in np.arange(e_start, e_end + 1):
+        t_start = t0 + period * (e + phi_min)
+        t_end = t0 + period * (e + phi_max)
+
+        # Clip to observation window
+        actual_start = max(t_start, jd_start)
+        actual_end = min(t_end, jd_end)
+
+        if actual_end > actual_start:
+            intervals.append([round(actual_start, 6), round(actual_end, 6)])
+
+    return intervals
+
+
+# def phase_to_jd_intervals(phi_min: float, phi_max: float, jd_start: float, jd_end: float, period: float, t0: float):
+#     """
+#     Converts a single phase range into multiple JD intervals across
+#     the entire observation span.
+#     """
+#     # Calculate the cycle numbers (E) at the start and end of observations
+#     e_start = np.floor((jd_start - t0) / period)
+#     e_end = np.ceil((jd_end - t0) / period)
+#
+#     intervals = []
+#     # Loop through every cycle that occurred during the lightcurve
+#     for e in np.arange(e_start, e_end + 1):
+#         # JD = t0 + P * (E + phase)
+#         t_start = t0 + period * (e + phi_min)
+#         t_end = t0 + period * (e + phi_max)
+#
+#         # Only keep intervals that overlap with our observation window
+#         if t_end < jd_start or t_start > jd_end:
+#             continue
+#
+#         # Clip to the actual data boundaries
+#         actual_start = max(t_start, jd_start)
+#         actual_end = min(t_end, jd_end)
+#
+#         if actual_end > actual_start:
+#             intervals.append([round(actual_start, 6), round(actual_end, 6)])
+#
+#     return intervals
 
 
 # def unpack_json_for_plotly(json_str: str, view_mode='mag'):
