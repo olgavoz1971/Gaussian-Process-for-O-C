@@ -51,7 +51,7 @@ class PhotometryFilter:
 
 
 class PhotCal:
-    def __init__(self, zp_flux, zp_flux_unit=None, zp_mag=0.0, zp_mag_unit=None, mag_sys="Vega"):
+    def __init__(self, zp_flux=1.0, zp_flux_unit=None, zp_mag=0.0, zp_mag_unit=None, mag_sys="Vega"):
         # zp_flux, unit-aware. # photDM:PhotCal.zeroPoint.flux.value
         if isinstance(zp_flux, u.Quantity):
             self._zp_flux = zp_flux
@@ -145,6 +145,15 @@ class PhotDM:
     @filter_id.setter
     def filter_id(self, value):
         self.filter.filter_id = value
+
+    @property
+    def mag0(self):
+        """Shortcut to get the filter name without digging into the sub-object."""
+        return self.photcal.zp_mag if self.photcal else 0.0
+
+    @mag0.setter
+    def mag0(self, value):
+        self.photcal.zp_mag = value
 
     def __repr__(self):
         # f_id = self.filter_id
@@ -356,6 +365,14 @@ def _pickup_jd0_from_table(table):
     return 0.0
 
 
+def _pickup_mag0_from_table(table):
+    jd0_pattern = re.compile(r"MAG0\s*=\s*([+-]?\d*\.?\d+)")
+    for line in table.meta.get('comments', []):
+        match = jd0_pattern.search(line.upper())
+        if match: return float(match.group(1))
+    return 0.0
+
+
 def _pickup_filter_from_table(table):
     """
     Scans the table comments for filter/band identification.
@@ -464,18 +481,26 @@ class VOLightCurve:
         # Try to extract metadata
         self.timesys.timeorigin = _pickup_jd0_from_table(self.table)
         heur_filter_id = _pickup_filter_from_table(self.table)
+        heur_mag0 = _pickup_mag0_from_table(self.table)
 
         # put this filter into the photcal and attach photCal to any mag/flux columns
         for colname in self.get_flux_colnames() + self.get_mag_colnames():
             photdm = self.photdms.get(colname, None)
 
+            # todo: sanitise this defaults/zeros/None logic
             if photdm is None:
                 new_filter = PhotometryFilter(filter_id=heur_filter_id)
-                self.photdms[colname] = PhotDM(photcal=None, photometry_filter=new_filter)
+                if heur_mag0:
+                    photcal = PhotCal(zp_mag=heur_mag0, zp_mag_unit='mag')
+                else:
+                    photcal = None
+                self.photdms[colname] = PhotDM(photcal=photcal, photometry_filter=new_filter)
             else:
                 # If it already existed but had no filter name, update it
                 if photdm.filter_id is None:
                     photdm.filter_id = heur_filter_id
+                if heur_mag0 is not None:
+                    photdm.mag0 = heur_mag0
 
         # Ensure we have photcal objects for every mag/flux column (even if dummy)
         # self._fill_missing_calibrations()

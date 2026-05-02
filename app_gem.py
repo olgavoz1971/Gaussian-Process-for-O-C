@@ -196,7 +196,7 @@ from gp import (
     load_intervals, gp_peak_pipeline,
     NOISE_SCALE_DIVISOR,
     # WHITE_NOISE_LEVEL_INIT, WHITE_NOISE_LEVEL_MIN, WHITE_NOISE_LEVEL_MAX,
-    KERNEL_TYPE, EXTREMA_MODE, guess_length_scale
+    KERNEL_TYPE, EXTREMA_MODE, guess_length_scale, AMPLITUDE_INIT, AMPLITUDE_MIN, AMPLITUDE_MAX
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -208,6 +208,9 @@ params_float = {
     "length_scale_init": 0.1,  # we estimate actual values after setting intervals
     "length_scale_min": 0.01,
     "length_scale_max": 1,
+    "amplitude_init": AMPLITUDE_INIT,
+    "amplitude_min": AMPLITUDE_MIN,
+    "amplitude_max": AMPLITUDE_MAX,
     # "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
     # "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
     # "white_noise_level_max": WHITE_NOISE_LEVEL_MAX
@@ -454,7 +457,8 @@ sidebar_gp = html.Div([
                             id='guess-sigma-label')], width=6),
         dbc.Col([html.Label("Noise divisor", className="small fw-bold",
                             id='noise-divisor-label')], width=6),
-        dbc.Tooltip("Empirical noise correction (↑ wiggly, ↓ smooth)", target='noise-divisor-label'),
+        dbc.Tooltip("Empirical noise correction (↑ wiggly, ↓ smooth)"
+                    "Allows not quite fair to tweak uncertainties", target='noise-divisor-label'),
         dbc.Tooltip("Auto-estimate noise (ignore provided uncertainties)", target='guess-sigma-label')
     ]),
 
@@ -514,7 +518,7 @@ sidebar_gp = html.Div([
     # ]),
 
     # Length Scale Inputs
-    html.Label("Length Scale (Min / Val / Max)", className="small fw-bold", id='ls-label'),
+    html.Label("Length Scale (Min / Init / Max)", className="small fw-bold", id='ls-label'),
     dbc.Tooltip("GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
                 "decrease if it misses structure.", target='ls-label'),
     # lll
@@ -538,6 +542,36 @@ sidebar_gp = html.Div([
             type="number", step="any",
             style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},   # red, "too long"
             value=params_float["length_scale_max"]), width=4),
+    ], className="g-1 mb-3"),
+
+    html.Label("Signal Amplitude (Min / Init / Max)", className="small fw-bold", id='amp-label'),
+    dbc.Tooltip(
+        "GP vertical scale (y-axis). Sets the 'headroom' for peak height. "
+        "Since flux is normalised to 1.0, values between 0.1 and 10.0 are usually safe. "
+        "Best left alone unless the model is failing to reach the top of your peak!",
+        target='amp-label'
+    ),
+
+    dbc.Row([
+        dbc.Col(dbc.Input(
+            id={'type': 'float-input', 'index': "amplitude_min"},
+            size="sm",
+            type="number", step="any",
+            style={"backgroundColor": "rgba(70, 90, 230, 0.12)"},   # Violet, "too short"
+            value=params_float["amplitude_min"]), width=4),
+        dbc.Col(dbc.Input(
+            size="sm",
+            id={'type': 'float-input', 'index': "amplitude_init"},
+            type="number",
+            # step=0.001,
+            step="any",
+            value=params_float["amplitude_init"]), width=4),
+        dbc.Col(dbc.Input(
+            size="sm",
+            id={'type': 'float-input', 'index': "amplitude_max"},
+            type="number", step="any",
+            style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},   # red, "too big"
+            value=params_float["amplitude_max"]), width=4),
     ], className="g-1 mb-3"),
 
     dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="w-100 mt-2"),
@@ -619,7 +653,7 @@ app.layout = dbc.Container([
     dcc.Store(id='store-lc-data'),
     dcc.Store(id='store-intervals-data'),
     dcc.Store(id='store-active-intervals-name', data="Drag or Select"),
-    dcc.Store(id='calc-trigger', data=0),   # A simple counter, trigger for scale recalculation
+    dcc.Store(id='scale-calc-trigger', data=0),   # A simple counter, trigger for scale recalculation
 
     # --- 2. GLOBAL DATA HUB
 
@@ -825,10 +859,10 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, view_mode, per
         x_data = ((x_data - t0) / period) % 1.0
         x_label = f"Phase (P={period} d, T₀={t0})"
 
-    fig = go.Figure()
+    fig = go.Figure()   # todo: use px.* stuff instead
 
     # Main data trace with error bars
-    fig.add_trace(go.Scattergl(
+    fig.add_trace(go.Scattergl(     # go.Scattergl (uses users GPU) is much faster and responsive than go.Scatter
         x=x_data, y=y_data,
         mode='markers',
         selectedpoints=None,
@@ -836,7 +870,8 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, view_mode, per
         unselected=dict(marker=dict(opacity=0.7, color='blue')),
         # Define how they look when they ARE in a box (while dragging)
         selected=dict(marker=dict(opacity=1.0, color='green')),
-        # error_y=error_y_logic,  # <--- Error bars added here  this is very heavy thing to send to and from
+        # todo: add an user-option -- draw error bars or not (no error bars for TESS data please!)
+        error_y=error_y_logic,  # <--- Error bars added here  this is very heavy thing to send to and from
         hoverinfo='none',
         marker=dict(
             size=4,
@@ -887,16 +922,18 @@ def update_prep_graph(lc_json_string, intervals_data, folding_on, view_mode, per
     # region unfold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),  # Targets the text inside the box
+    Output('scale-calc-trigger', 'data', allow_duplicate=True),     # Trigger scale recalculation
     # Input('upload-lc-prep', 'contents'),
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),  # Grabs the filename
+    State('scale-calc-trigger', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def upload_lc(contents, filename):
+def upload_lc(contents, filename, scale_calc_trigger_counter):
     print(f'Uploading {filename}')
     if contents is None:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     # Decode the upload
     try:
         content_type, content_string = contents.split(',')
@@ -920,7 +957,7 @@ def upload_lc(contents, filename):
         ])
 
         # return lc_data, new_label
-        return lc_json_string, new_label
+        return lc_json_string, new_label, scale_calc_trigger_counter + 1
 
     except Exception as e:
         # 1. Detailed Console Logging
@@ -944,7 +981,7 @@ def upload_lc(contents, filename):
                 placement="right",
                 style={"fontSize": "0.75rem"}
             ),
-        ])
+        ]), dash.no_update
 
 
 # Callbacks for Intervals file upload/download/signs
@@ -1089,7 +1126,7 @@ def clear_all_intervals(n_clicks):
     Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
     Input('store-intervals-data', 'data'),
-    Input('calc-trigger', 'data'),  # Also triggered by Reset Button
+    Input('scale-calc-trigger', 'data'),  # Also triggered by Reset Button
     State('store-lc-data', 'data'),
     prevent_initial_call=True
     # endregion
@@ -1371,7 +1408,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
 
 
 def create_gp_plot(gp_res, jd_max_guess=None):
-    fig = go.Figure()
+    fig = go.Figure()   # todo: shift to px.* logic which is faster
 
     # region extract data from gp_res
     gp = gp_res['gp']
@@ -1390,7 +1427,8 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # endregion
 
     # 1. Data Points: Custom hover format
-    fig.add_trace(go.Scattergl(     # go.Dcattergl is much mire faster than go.Scatter
+    fig.add_trace(go.Scatter(   # avoid GPU approach (Scattergl) here,
+        # it overflows user context, when we produce (we do!) a lot of small graphs
         # region unfold me
         x=x, y=y,
         mode='markers',
@@ -1407,7 +1445,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     ))
 
     # 2. GP Mean: Custom hover format
-    fig.add_trace(go.Scattergl(
+    fig.add_trace(go.Scatter(
         x=x_grid, y=y_mean,
         mode='lines',
         line=dict(color='rgb(31, 119, 180)', width=2),
@@ -1421,7 +1459,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
     # 3. GP Confidence Interval (±1σ)
     # hover info is hidden
     # Plotly trick: Create a continuous boundary by reversing the lower bound
-    fig.add_trace(go.Scattergl(
+    fig.add_trace(go.Scatter(
         x=np.concatenate([x_grid, x_grid[::-1]]),
         y=np.concatenate([y_mean + y_std, (y_mean - y_std)[::-1]]),
         fill='toself',
@@ -1434,7 +1472,7 @@ def create_gp_plot(gp_res, jd_max_guess=None):
 
     # 4. Posterior-sampled maxima (Alpha blending)
     # hover info is hidden
-    fig.add_trace(go.Scattergl(
+    fig.add_trace(go.Scatter(
         x=peaks_jd,
         y=np.full_like(peaks_jd, 0.98 * mean_peak),
         mode='markers',
@@ -1677,10 +1715,10 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     Output({'type': 'float-input', 'index': ALL}, 'value'),
     Output('guess-sigma', 'value'),
     Output('kernel-type', 'value'),
-    Output('calc-trigger', 'data'),     # Trigger scale recalculation
+    Output('scale-calc-trigger', 'data'),     # Trigger scale recalculation
     Input('reset-btn', 'n_clicks'),
     State({'type': 'float-input', 'index': ALL}, 'id'),
-    State('calc-trigger', 'data'),
+    State('scale-calc-trigger', 'data'),
     prevent_initial_call=True
     # endregion
 )

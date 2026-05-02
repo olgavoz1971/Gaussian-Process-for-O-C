@@ -199,9 +199,9 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
     e_data = e
 
     if view_mode != current_domain:
-        # zp_m = photcal['zp_mag']
+        zp_m = photcal['zp_mag']
         # todo: !!!!!!!!!
-        zp_m = 25.0
+        # zp_m = 5.0
         zp_f = photcal['zp_flux']
 
         if view_mode == 'flux' and current_domain == 'mag':
@@ -293,93 +293,6 @@ def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: f
     return intervals
 
 
-# def phase_to_jd_intervals(phi_min: float, phi_max: float, jd_start: float, jd_end: float, period: float, t0: float):
-#     """
-#     Converts a single phase range into multiple JD intervals across
-#     the entire observation span.
-#     """
-#     # Calculate the cycle numbers (E) at the start and end of observations
-#     e_start = np.floor((jd_start - t0) / period)
-#     e_end = np.ceil((jd_end - t0) / period)
-#
-#     intervals = []
-#     # Loop through every cycle that occurred during the lightcurve
-#     for e in np.arange(e_start, e_end + 1):
-#         # JD = t0 + P * (E + phase)
-#         t_start = t0 + period * (e + phi_min)
-#         t_end = t0 + period * (e + phi_max)
-#
-#         # Only keep intervals that overlap with our observation window
-#         if t_end < jd_start or t_start > jd_end:
-#             continue
-#
-#         # Clip to the actual data boundaries
-#         actual_start = max(t_start, jd_start)
-#         actual_end = min(t_end, jd_end)
-#
-#         if actual_end > actual_start:
-#             intervals.append([round(actual_start, 6), round(actual_end, 6)])
-#
-#     return intervals
-
-
-# def unpack_json_for_plotly(json_str: str, view_mode='mag'):
-#     """
-#     Decodes the transport JSON and prepares data for Plotly.
-#     Handles the Mag <-> Flux conversion if the requested view_mode
-#     differs from the active_domain in the JSON.
-#     """
-#     packet = json.loads(json_str)
-#     schema = packet['schema']
-#     meta = packet['meta']
-#     photcal = meta['photcal']
-#
-#     # 1. Load into DataFrame
-#     # Columns are: [time, value, error, flag]
-#     df = pd.DataFrame(packet['data'], columns=['t', 'v', 'e', 'f'])
-#
-#     # 2. Re-apply JD0 if present
-#     jd0 = meta.get('jd0', 0)
-#     if jd0:
-#         df['t'] += jd0
-#
-#     # 3. Domain Logic: Do we need to convert?
-#     # current_domain is 'mag' or 'flux'
-#     current_domain = meta['active_domain']
-#
-#     y_data = df['v']
-#     e_data = df['e']
-#
-#     if view_mode != current_domain:
-#         # We need to calculate the other domain
-#         zp_m = photcal['zp_mag']
-#         zp_f = photcal['zp_flux']
-#
-#         if view_mode == 'flux' and current_domain == 'mag':
-#             # Mag -> Flux: F = F0 * 10^(-0.4 * (m - m0))
-#             y_data = zp_f * 10 ** (-0.4 * (df['v'] - zp_m))
-#             # Error propagation (approximate): sigma_f = f * 0.921 * sigma_m
-#             if schema['error']:
-#                 e_data = y_data * 0.921034 * df['e']
-#
-#         elif view_mode == 'mag' and current_domain == 'flux':
-#             # Flux -> Mag: m = m0 - 2.5 * log10(F / F0)
-#             y_data = zp_m - 2.5 * np.log10(df['v'] / zp_f)
-#             # Error propagation: sigma_m = 1.0857 * (sigma_f / f)
-#             if schema['error']:
-#                 e_data = 1.085736 * (df['e'] / df['v'])
-#
-#     return {
-#         'x': df['t'],
-#         'y': y_data,
-#         'err': e_data if schema['error'] else None,
-#         'flag': df['f'],
-#         'x_label': "Julian Date (JD)",
-#         'y_label': "Magnitude" if view_mode == 'mag' else "Flux",
-#         'is_mag': (view_mode == 'mag')
-#     }
-
-
 def pretty_print_lc_json(json_str: str, max_rows: int = 5):
     """
     Parses the LC JSON string and prints a human-readable summary.
@@ -458,66 +371,6 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
             print(f"  {format_row(row)}")
 
     print("=" * 80)
-
-
-# def pretty_print_lc_json(json_str: str, max_rows: int = 5):
-#     """
-#     Parses the LC JSON string and prints a human-readable summary.
-#     Summarizes the 'data' array to avoid flooding the console.
-#     """
-#     try:
-#         packet = json.loads(json_str)
-#     except json.JSONDecodeError:
-#         print("Error: Input is not a valid JSON string.")
-#         return
-#
-#     schema = packet.get("schema", {})
-#     meta = packet.get("meta", {})
-#     photcal = meta.get("photcal", {})
-#     data = packet.get("data", [])
-#
-#     print("=" * 60)
-#     print(f"{'VOLightCurve JSON Transport Package':^60}")
-#     print("=" * 60)
-#
-#     # 1. Metadata Section
-#     print(f"PRIMARY DOMAIN: {meta.get('active_domain', 'Unknown').upper()}")
-#     print(f"JD0 (Offset):   {meta.get('jd0', 'N/A')}")
-#     print(f"CALIBRATION:    Sys: {photcal.get('mag_sys', 'N/A')}")
-#     print(f"                ZP Mag:  {photcal.get('zp_mag')} {photcal.get('zp_mag_unit')}")
-#     print(f"                ZP Flux: {photcal.get('zp_flux')} {photcal.get('zp_flux_unit')}")
-#     print("-" * 60)
-#
-#     # 2. Schema Section
-#     print("SCHEMA / COLUMN MAPPING:")
-#     for key, colname in schema.items():
-#         print(f"  {key:10} -> {colname}")
-#     print("-" * 60)
-#
-#     # 3. Data Summary Section
-#     total_rows = len(data)
-#     print(f"DATA ({total_rows} rows):")
-#
-#     # Headers
-#     headers = [schema.get('time', 'time'), schema.get('value', 'val'),
-#                schema.get('error', 'err'), schema.get('flag', 'flag')]
-#     print(f"  {' | '.join([f'{h:^12}' for h in headers])}")
-#     print(f"  {'-' * 55}")
-#
-#     # Rows (head and tail)
-#     if total_rows > (max_rows * 2):
-#         display_rows = data[:max_rows]
-#         for row in display_rows:
-#             print(f"  {' | '.join([f'{str(item):^12}' for item in row])}")
-#         print(f"  {'...':^12} | {'...':^12} | {'...':^12} | {'...':^12}")
-#         display_rows = data[-max_rows:]
-#         for row in display_rows:
-#             print(f"  {' | '.join([f'{str(item):^12}' for item in row])}")
-#     else:
-#         for row in data:
-#             print(f"  {' | '.join([f'{str(item):^12}' for item in row])}")
-#
-#     print("=" * 60)
 
 
 def main():

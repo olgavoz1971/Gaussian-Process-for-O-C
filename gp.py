@@ -36,7 +36,7 @@ KERNEL_TYPE = "matern"      # or rbf
 # Larger value → smaller assumed errors → more sensitive (more wiggly fit).
 # Smaller value → larger errors → smoother fit.
 # NOISE_SCALE_DIVISOR = 2.5
-NOISE_SCALE_DIVISOR = 2
+NOISE_SCALE_DIVISOR = 1
 
 # =======================================
 # GP scale length
@@ -73,6 +73,13 @@ SAMPLING_SCALE_FACTOR = 3
 
 # Helps to calculate initial guess about scale based on the size of the lightcurve piece (along time-axes)
 INTERVAL_DIVISOR = 4  # length_scale_init = duration / LENGTH_SCALE_DIVISOR
+
+# constant_value_bounds = (1e-4, 20.0)
+# Constant kernel init and bounds
+# Working with normalised things, we propose this guess
+AMPLITUDE_INIT = 1.0
+AMPLITUDE_MIN = 1e-4
+AMPLITUDE_MAX = 20.0
 
 # ==========================
 # Upper bound control
@@ -424,7 +431,7 @@ def gp_peak_pipeline(
 
     x = frag['jd'].values.copy()
     y = frag['flux'].values.copy()
-    z = frag['flux_err'].values.copy()
+    y_err = frag['flux_err'].values.copy()
     jd_left = frag['jd'].min()
     jd_right = frag['jd'].max()
 
@@ -460,17 +467,21 @@ def gp_peak_pipeline(
 
     # --- 3. estimate noise ---
     # If guess_sigma=True OR no valid errors → use MAD
-    if params['guess_sigma'] or np.all(np.isnan(z)):
+    if params['guess_sigma'] or np.all(np.isnan(y_err)):
         noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode)
         noise_sigma /= params['noise_scale_divisor']  # empirical factor, allow user tune it
         print(f'guessed {noise_sigma=:.3f}')
         # propagate noise into normalized units
         noise_sigma_norm = noise_sigma / ampl_guess
     else:
-        print(f'noise_sigma mean {np.mean(z):.3f}')
-        noise_sigma_norm = z / ampl_guess
+        print(f'noise_sigma mean {np.mean(y_err):.3f}')
+        y_err /= params['noise_scale_divisor']      # allow user to tweak (to manipulate!) the uncertainties
+        noise_sigma_norm = y_err / ampl_guess
 
     # --- 5. kernel ---
+    amplitude = params['amplitude_init']
+    amplitude_bounds = (params['amplitude_min'], params['amplitude_max'])
+
     length_scale = params['length_scale_init']
     # print(f'length_scale_guess={length_scale:.3f}')
     ls_bounds = (params['length_scale_min'], params['length_scale_max'])
@@ -479,12 +490,13 @@ def gp_peak_pipeline(
 
     # Vertical scale kernel (Amplitude)
 
-    constant_value_bounds = (1e-4, 20.0)
+    # constant_value_bounds = (1e-4, 20.0)
     # constant_value_bounds=(y_norm_var * 0.01, y_norm_var * 100.0)
 
     ckern = ConstantKernel(
-        constant_value=1.0,
-        constant_value_bounds=constant_value_bounds
+        # constant_value=1.0,
+        constant_value=amplitude,
+        constant_value_bounds=amplitude_bounds
     )
 
     # Horizontal scale kernel (Smoothness)
@@ -556,10 +568,16 @@ def gp_peak_pipeline(
 
     jd_extr = jd_grid.ravel()[idx_extr]
     mean_extr = mean_grid.ravel()[idx_extr]
-    print(f'{jd_extr=:.3f} {mean_extr=:.3f}')
+    print(f'From GP predict: {jd_extr=:.10f} {mean_extr=:.10f}')
 
     # --- 10. Uncertainty via Posterior Sampling ---
     # Draw samples: (n_points, n_samples)
+    # Check if random_state is None, if so, give it a truly random integer.
+    # From Dash Plotly random_state=None still reproduces results
+    if random_state is None:
+        # local NumPy generator to avoid global conflicts
+        random_state = int(np.random.default_rng().integers(0, 2**31 - 1))
+
     samples = gp.sample_y(jd_grid, n_samples=n_samples_uncert, random_state=random_state)
 
     if extrema_mode == 'max':
@@ -577,7 +595,8 @@ def gp_peak_pipeline(
     # while we expect smooth lightcurve. So, we estimate statistics of non-physical local maxima.
     # This way we probably overestimate time-of-extremum uncertainties
     jd_extr_std = float(np.std(extr_jds))
-    print(f'old way: {jd_extr_std=:.7f}')
+    jd_extr_mean = float(np.mean(extr_jds))
+    print(f'From samples: {jd_extr_std=:.7f} {jd_extr_mean=:.7f}')
 
     # --- 11. Plotting ---
 
@@ -683,6 +702,9 @@ def main():
                     "length_scale_init": scale['length_scale_init'],
                     "length_scale_min": scale['length_scale_min'],
                     "length_scale_max": scale['length_scale_max'],
+                    "amplitude_init": AMPLITUDE_INIT,
+                    "amplitude_min": AMPLITUDE_MIN,
+                    "amplitude_max": AMPLITUDE_MAX,
                     # "white_noise_level_init": WHITE_NOISE_LEVEL_INIT,
                     # "white_noise_level_min": WHITE_NOISE_LEVEL_MIN,
                     # "white_noise_level_max": WHITE_NOISE_LEVEL_MAX,
