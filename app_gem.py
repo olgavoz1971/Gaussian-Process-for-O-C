@@ -34,7 +34,7 @@ and how much it trusts the data.
 
 Internally, we use a kernel of the form:
 
-`Constant × Matern(ν = 2.5) + White noise`
+`ConstantKernel (Amplitude) × [Matern(ν = 2.5) OR RBF]`
 
 You do not need to work with this directly — the parameters below are the practical controls.
 
@@ -43,50 +43,59 @@ You do not need to work with this directly — the parameters below are the prac
 ## Parameters
 
 **GUESS_SIGMA**
-Ignore provided uncertainties and estimate noise from data scatter.  
-Use when `flux_err`(`mag_err`) are missing or unreliable.
+
+If enabled, the model ignores provided uncertainties and estimates noise from the data scatter 
+(MAD). Use this if errors are missing or clearly unreliable.
 
 ---
 
 **NOISE_SCALE_DIVISOR**
-Empirical correction for estimated noise (used when `GUESS_SIGMA=True`).  
-The automatic estimate is only approximate — this parameter lets you adjust it.
 
-- Higher → smaller errors → more sensitive (wiggly) fit  
-- Lower → larger errors → smoother fit  
+A handy "trust factor" for measurement noise. This empirical divisor 
+is applied to both guessed noise or provided observation errors.
 
-Typical use:
-- Increase if the model is too flat  
-- Decrease if it starts fitting noise
+- *Higher (>1.0)*: You trust the data more than the errors suggest. 
+  Results in a more sensitive (wiggly) fit;
+- *Lower (<1.0)*: You suspect the errors are underestimated. Results in a smoother fit.
+
+Use this to tweak" the fit if the model is ignoring real structure or, conversely, over-fitting noise.
 
 ---
 
 **LENGTH_SCALE (MIN / INIT / MAX)**
-Controls how quickly the model can change in time (smoothness).
+
+Controls the smoothness in time (x-axis).
 
 - *INIT*: initial guess (≈ half of a typical feature width)  
-- *MIN*: prevents fitting very small-scale noise  
-- *MAX*: prevents over-smoothing  
+- *MIN*: prevents the model from diving into individual noise spikes 
+- *MAX*: prevents the model from becoming so stiff it misses the peak.
 
 Practical tuning:
-- Too wiggly → increase values  
-- Too smooth → decrease values  
+- Too wiggly --> increase values  
+- Too smooth --> decrease values  
 
 ---
 
-**WHITE_NOISE_LEVEL (MIN / INIT / MAX)**
-Additional noise the model can include beyond measurement errors.
+**SIGNAL AMPLITUDE (MIN / INIT / MAX)**
 
-Use this if your uncertainties are underestimated.
+Controls the vertical "headroom" (y-axis).
+Since we work with normalised flux, the amplitude represents how far the GP can swing from the baseline.
 
-- Higher → smoother fit  
-- Lower → model follows data more closely  
+- *Too low*: The model may "clip" and fail to reach the true top of a sharp peak;
+- *Too high*: The model might become unstable and create non-physical vertical swings.
 
-If your `flux_err` is reliable, keep this small.
+---
+
+**KERNEL TYPE**
+
+- *Matern (ν=2.5)*: twice differentiable, physically realistic;
+- *RBF*: (Radial Basis Function): infinitely smooth. Best for very rounded, geometric features, 
+   but can sometimes be too stiff for real data.
 
 ---
 
 **EXTREMA_MODE**
+
 Select what to detect:
 - `min` — minima (eclipses)  
 - `max` — maxima (peaks)
@@ -105,7 +114,7 @@ Select what to detect:
 3. **Final error**  
    The spread of these extrema gives the uncertainty in time.
 
-This approach naturally accounts for noise, sampling, and shape of the feature.
+We hope, this approach naturally accounts for noise, sampling, and shape of the feature.
 
 ---
 ## If you are curious how it works
@@ -113,17 +122,29 @@ This approach naturally accounts for noise, sampling, and shape of the feature.
 ### What is a Gaussian Process
 
 A Gaussian Process (GP) is a way to describe **a whole family of possible curves** that could pass 
-through your data. (It does not fit the data with a Gaussian-shaped function; 
-the term Gaussian there refers to the use of the normal distribution).
+through your data. (**Note:** It does not fit the data with a Gaussian-shaped function; 
+the term "Gaussian" refers to the underlying use of the Normal distribution to calculate probabilities).
 
-Instead of choosing a fixed formula (parabola, spline, etc.), we assume:
+Instead of choosing a fixed formula (like parabola, spline, etc.), we assume:
 > “The true lightcurve is one of many smooth functions consistent with the observations.”
 
 The model does not try to find *the* curve.  
 It assigns a **probability to every possible curve**, favouring those that:
 - pass near the data points,
-- remain reasonably smooth,
+- remain reasonably smooth (determined by your **length scale**),
 - respect the assumed noise level.
+
+### Visualising the "Family of Curves"
+To turn this abstract probability into a concrete measurement, we look at the "Posterior Samples".
+
+<img src="assets/samples.png" style="width:100%; max-width:600px; display:block; margin:auto;"/>
+
+As you can see in the image above, the GP isn't just one particular curve. 
+We draw three hundreds of these "valid" realisations from the model. 
+Each one is a smooth function that fits your data but has a slightly different peak position 
+(marked by the red dots).
+The "Peak JD" you see in the results is the extremum of the Blue Mean Curve.
+We calculate the Standard Deviation (σ) of all the sampled peak positions (the red dots). 
 
 ---
 

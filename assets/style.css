@@ -1,0 +1,22 @@
+.upload-box:hover {
+    border-color: #007bff !important;
+    background-color: #f8f9fa;
+    cursor: pointer;
+}
+
+/* This forces the collapse to occupy 300px when open, but stay flexible */
+/*#registry-collapse.show {*/
+/*    width: 15vw;*/
+/*    min-width: 200px;*/
+/*    margin-left: 5px;*/
+/*}*/
+
+/* Ensure the plot redraws itself when the container size changes */
+/*.js-plotly-plot {*/
+/*    width: 100% !important;*/
+/*}*/
+
+/*#registry-collapse {*/
+/*    width: 0px;*/
+/*    overflow: hidden;*/
+/*}*/
