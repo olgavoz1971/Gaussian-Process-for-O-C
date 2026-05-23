@@ -13,11 +13,11 @@ Reference:
 import numpy as np
 import warnings
 from matplotlib import pyplot as plt
-from scipy import stats
 from scipy.special import ndtri
 from scipy.stats import f as f_dist
 from dataclasses import dataclass
-from typing import Optional
+from astropy.io import ascii
+from typing import Union, Optional, Tuple
 
 plt.rcParams.update({'font.size': 14})  # 20 can sometimes cramp multi-panel plots
 
@@ -202,7 +202,7 @@ def aov_test(
 
     if weighted:
         nan_count = np.isnan(mag_err).sum()
-        nan_percentage = (nan_count / len(mag_err)) * 100   # type: ignore
+        nan_percentage = (nan_count / len(mag_err)) * 100  # type: ignore
         max_nan_percentage = 30
         if 0 < nan_percentage < max_nan_percentage:
             # Use the 90th percentile so we don't over-trust the missing-error data
@@ -353,6 +353,7 @@ def aov_test(
 
 
 def plot_aov_folded_lightcurve(
+        # region unfold
         jd: np.ndarray,
         mag: np.ndarray,
         result: AoVResult,
@@ -360,6 +361,7 @@ def plot_aov_folded_lightcurve(
         epoch: float,
         mag_err: Optional[np.ndarray] = None,
         plot_twice: bool = True
+        # endregion
 ) -> None:
     """Plots the phase-folded light curve overlaid with the AoV step model."""
     mask = np.isfinite(jd) & np.isfinite(mag)
@@ -478,63 +480,99 @@ def self_test():
 
 # --------------- Real observations stuff --------
 
-# def load_data(obs_file):
-#     # numpy automatically ignores rows starting with '#' by default
-#     jd_obs, mag_obs = np.loadtxt(obs_file, unpack=True)
-#     return jd_obs, mag_obs, None
+from astropy.time import Time
 
 
-def load_data(obs_file: str):
+def load_data_astropy(
+        obs_file: str,
+        jd_col: Union[int, str] = 0,
+        mag_col: Union[int, str] = 1,
+        err_col: Optional[Union[int, str]] = 2,
+        format='commented_header'
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
-    Load astronomical data from a text file.
-
-    Reads the 0th column as Julian Date, the 1st column (dmag) as the core magnitude,
-    and the 3rd column as the magnitude error. Values of 99.99 in the error column
-    are converted to np.nan so they can be handled gracefully by the downstream
-    masking system.
+    Load astronomical data from any ASCII file using Astropy.
 
     Parameters
     ----------
     obs_file : str
         Path to the space/tab-separated observation data file.
-
-    Returns
-    -------
-    jd_obs : np.ndarray
-        Array of observation times.
-    mag_obs : np.ndarray
-        Array of differential magnitudes (dmag).
-    err_obs : np.ndarray
-        Array of 1-sigma observational errors (with 99.99 mapped to NaN).
+    jd_col : int or str, default 0
+        The column name or 0-based index for Julian Dates.
+    mag_col : int or str, default 1
+        The column name or 0-based index for observations (magnitudes).
+    err_col : int or str, optional, default 3
+        The column name or 0-based index for uncertainties. If None, returns None.
+    format : table format (i.g., ecsv
     """
-    # Column indices: 0 -> JD, 1 -> dmag, 3 -> err
-    # numpy automatically skips rows starting with '#'
-    jd_obs, mag_obs, err_obs = np.loadtxt(
-        obs_file,
-        unpack=True,
-        usecols=(0, 1, 3)
-    )
+    # format='commented_header' explicitly uses the #-led line for column names
+    # and ensures the very next row is read as data.
+    table = ascii.read(obs_file, format=format, header_start=0)
+    colnames = table.colnames
+    if isinstance(err_col, int):
+        if len(table.columns) <= err_col:
+            err_col = None
+    else:
+        if err_col not in colnames:
+            err_col = None
 
-    # Locate the dummy "no error" placeholders and replace them with NaN
-    # Using np.isclose accounts for any minor floating-point storage variations
+    def resolve_col_name(col_identifier: Union[int, str]) -> str:
+        if isinstance(col_identifier, str):
+            for name in colnames:
+                if name.lower() == col_identifier.lower():
+                    return name
+            raise ValueError(f"Column '{col_identifier}' not found in headers: {colnames}")
+        return colnames[int(col_identifier)]
+
+    jd_key = resolve_col_name(jd_col)
+    mag_key = resolve_col_name(mag_col)
+
+    # Extract data column safely
+    jd_column_data = table[jd_key]
+    # If Astropy parsed it into a complex Time object, grab its underlying JD floats
+    if isinstance(jd_column_data, Time):
+        jd_column_data = jd_column_data.jd
+
+    jd_obs = np.ascontiguousarray(jd_column_data, dtype=float)
+    # jd_obs = np.ascontiguousarray(table[jd_key], dtype=float)
+    mag_obs = np.ascontiguousarray(table[mag_key], dtype=float)
+
+    if err_col is None:
+        return jd_obs, mag_obs, None
+
+    err_key = resolve_col_name(err_col)
+    err_obs = np.ascontiguousarray(table[err_key], dtype=float)
+
+    # Convert the legacy 99.99 flag directly to NaN
     no_error_mask = np.isclose(err_obs, 99.99)
     err_obs[no_error_mask] = np.nan
 
     return jd_obs, mag_obs, err_obs
 
 
-def cutout_data(jd: np.ndarray, mag: np.ndarray, mag_err: np.ndarray, jd_min: float, jd_max: float):
+def cutout_data(jd: np.ndarray, mag: np.ndarray, mag_err: np.ndarray | None, jd_min: float, jd_max: float):
     """Filters data within a JD range"""
     mask = (jd >= jd_min) & (jd <= jd_max)
     jd_piece = jd[mask]
     mag_piece = mag[mask]
-    mag_err = mag_err[mask]
+    if mag_err is not None:
+        mag_err = mag_err[mask]
     return jd_piece, mag_piece, mag_err
 
 
-def main(obs_filename: str, jd_min: float, jd_max: float, period: float, epoch: float):
-    jd_full, mag_full, mag_err_full = load_data(obs_filename)
-    jd, mag, mag_err = cutout_data(jd=jd_full, mag=mag_full, mag_err=mag_err_full, jd_min=jd_min, jd_max=jd_max)
+def main(obs_filename: str,
+         period: float, epoch: float,
+         jd_col: int | str = 'jd',
+         mag_col: Union[int, str] = 'mag',
+         err_col: Optional[Union[int, str]] = 'mag_err',
+         format='commented_header',
+         jd_min: float | None = None, jd_max: float | None = None):
+    jd_full, mag_full, mag_err_full = load_data_astropy(obs_filename, jd_col=jd_col, mag_col=mag_col, err_col=err_col,
+                                                        format=format)
+    if jd_min is not None and jd_max is not None:
+        jd, mag, mag_err = cutout_data(jd=jd_full, mag=mag_full, mag_err=mag_err_full, jd_min=jd_min, jd_max=jd_max)
+    else:
+        jd, mag, mag_err = jd_full, mag_full, mag_err_full
     print("\n--- Observations: ---")
     result1 = aov_test(jd, mag, period, epoch, mag_err=mag_err, n_bins=10, plot=True)
     print(result1)
@@ -553,14 +591,17 @@ def main(obs_filename: str, jd_min: float, jd_max: float, period: float, epoch: 
 
 
 if __name__ == "__main__":
-    # self_test()
-    # import sys
-    # sys.exit(0)
-
     # filename = 'data/TCP_J05415572-2308340/Summ.DAT'
     filename = 'data/TCP_J05415572-2308340/all_norm.dat'
+    # filename_tess = '/home/voz/projects/UPJS/Shugarov/J0541/TESS/normalized/b.dat'
+    filename_tess = '/home/voz/projects/UPJS/Shugarov/J0541/TESS/TESS_composite_tarasenkov.dat'
+    # filename_ecsv = '/home/voz/Downloads/lc_tess_FFI__85.47289760054254_-23.139926117784487_sector_6_TESScut.ecsv'
+    filename_ecsv = '/home/voz/Downloads/lc_tess_FFI__85.47289760054254_-23.139926117784487_sector_32_TESScut.ecsv'
     P_1 = 0.05285203  # Period in days
+    P_tess = 0.0660631
+    P_tess = 0.03303155
     T0_1 = 60971.5687  # Initial epoch in JD
+    T0_tess = 2458468.2856413433
     jd_min_1 = 0
     jd_max_1 = 60972.0
     # ----
@@ -568,6 +609,17 @@ if __name__ == "__main__":
     T0_2 = T0_1
     jd_min_2 = 60972.3
     jd_max_2 = 60981
-    main(obs_filename=filename, period=P_1, epoch=T0_1, jd_min=0, jd_max=60970.8)
-    # main(obs_filename=filename, period=P_1, epoch=T0_1, jd_min=jd_min_1, jd_max=jd_max_1)
-    # main(obs_filename=filename, period=P_2, epoch=T0_2, jd_min=jd_min_2, jd_max=jd_max_2)
+    # jd_full, mag_full, mag_err_full = load_data(filename)
+    # jd_full_a, mag_full_a, mag_err_full_a = load_data_astropy(filename, err_col=3)
+    # pass
+
+    # main(obs_filename=filename_tess, period=0.066, epoch=T0_tess, mag_col='flux')
+    main(obs_filename=filename_ecsv, period=0.06606354, epoch=T0_tess, jd_col='time', mag_col='flux',
+         format='ecsv', err_col=None)
+    # main(obs_filename=filename_tess, period=0.06606354, epoch=T0_tess, mag_col='flux')
+    # main(obs_filename=filename_tess, period=P_tess, epoch=T0_tess, mag_col='flux')
+    # main(obs_filename=filename_tess, period=P_tess, epoch=T0_tess, mag_col='flux', jd_min=2458468.2856413433, jd_max=2458490)
+    # main(obs_filename=filename_tess, period=P_tess, epoch=T0_tess, mag_col=1, jd_min=2458490, jd_max=2558490)
+    # main(obs_filename=filename, period=P_1, epoch=T0_1, mag_col='dmag', jd_col=0, err_col='err', jd_min=0, jd_max=60970.8)
+    # main(obs_filename=filename, period=P_1, epoch=T0_1, jd_min=jd_min_1, jd_max=jd_max_1,  mag_col='dmag', jd_col=0)
+    # main(obs_filename=filename, period=P_2, epoch=T0_2, jd_min=jd_min_2,  mag_col='dmag', jd_col=0, jd_max=jd_max_2)
