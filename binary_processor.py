@@ -17,7 +17,8 @@ from scipy.special import ndtri
 from scipy.stats import f as f_dist
 
 # Set global formatting profile
-plt.rcParams.update({'font.size': 14})
+# plt.rcParams.update({'font.size': 14})
+plt.rcParams.update({'font.size': 24})  # Set global font size
 
 
 # ==========================  INPUT/OUTPUT/CUTOUT ============
@@ -145,27 +146,41 @@ def export_folded_data(filename: str, jd: np.ndarray, phases: np.ndarray, mag: n
 
 # =============== O-C  and PARABOLIC EPHEMERIS MATHEMATICS ========
 
-def calculate_oc(minima: np.ndarray, period: float, epoch: float) -> Tuple[np.ndarray, np.ndarray]:
+def calculate_oc(minima: np.ndarray, period: float, epoch: float,
+                 tweak_oc: float | None = None) -> Tuple[np.ndarray, np.ndarray]:
     """Calculate O-C values for observed t_minima based on given period and epoch."""
     cycle_numbers = np.round((minima - epoch) / period).astype(int)
     predicted_minima = epoch + cycle_numbers * period
     oc_values = minima - predicted_minima
 
     # Optional tweak hook
-    oc_values[oc_values <= -0.002] += period
+    if tweak_oc is not None:
+        oc_values[oc_values <= tweak_oc] += period
+
+    # plt.figure(figsize=(16, 10))
+    # plt.scatter(cycle_numbers, oc_values, color='b', label='O-C values')
+    # plt.axhline(0, color='r', linestyle='--', lw=1)
+    # plt.xlabel("Time [JD]")
+    # plt.ylabel("O-C [days]")
+    # plt.title('O-C vs cycles')
+    # plt.grid(True)
+    # plt.legend()
+    # plt.show()
 
     return oc_values, cycle_numbers
 
 
-def fit_linear(t: np.ndarray, err: Optional[np.ndarray], oc: np.ndarray) -> Tuple[float, float]:
+def fit_linear(t: np.ndarray, err: Optional[np.ndarray],
+               oc: np.ndarray, plot=False) -> Tuple[float, float]:
     """
     Fit a linear trend to O-C values, return the slope and intercept
     A simple two-steps outliers cleaning procedure.
     The goal -- to make O-C parabola look more symmetrical
     """
     if err is not None:
-        # todo: light tweak to control part of O-C with bg errors: pow = 0.75
-        weights = 1.0 / np.power(np.where(err == 0, 1e-6, err), pow)
+        # todo: light tweak to control part of O-C with big errors:
+        exp = 0.75
+        weights = 1.0 / np.pow(np.where(err == 0, 1e-6, err), exp)
         coeffs = np.polyfit(t, oc, 1, w=weights)
     else:
         weights = None
@@ -184,6 +199,19 @@ def fit_linear(t: np.ndarray, err: Optional[np.ndarray], oc: np.ndarray) -> Tupl
         slope_final, intercept_final = np.polyfit(t_inliers, oc_inliers, 1, w=w_inliers)
     else:
         slope_final, intercept_final = np.polyfit(t_inliers, oc_inliers, 1)
+
+    if plot:
+        # Plotting the diagnostic fit
+        plt.figure(figsize=(16, 10))
+        plt.scatter(t, oc, alpha=0.5, label='O-C values')
+        plt.plot(t, slope * t + intercept, 'g--', label='Initial fit')
+        plt.plot(t, slope_final * t + intercept_final, 'r-', label='Final (Cleaned) fit')
+        plt.axhline(0, color='k', linestyle=':', alpha=0.5)
+        plt.xlabel('Time (JD)')
+        plt.ylabel('O-C (days)')
+        plt.title("Linear Trend Fitting")
+        plt.legend()
+        plt.show()
 
     return slope_final, intercept_final
 
@@ -919,9 +947,12 @@ def plot_oc_diagram(
         print(f"[Export] Saved O-C plots to '{pdf_out}' and '{png_out}'")
 
 
-def plot_simple_oc(minima: np.ndarray, oc_values:np.ndarray, title=''):
+def plot_simple_oc(minima: np.ndarray, oc_values: np.ndarray, jd_err: np.ndarray | None, title='O-C'):
     plt.figure(figsize=(16, 10))
-    plt.scatter(minima, oc_values, color='b', label='O-C values')
+    if jd_err is None:
+        plt.scatter(minima, oc_values, color='b', label='O-C values')
+    else:
+        plt.errorbar(minima, oc_values, yerr=jd_err, fmt='bo')
     plt.axhline(0, color='r', linestyle='--', lw=1)
     plt.xlabel("Time [JD]")
     plt.ylabel("O-C [days]")
@@ -1624,7 +1655,7 @@ def oc_realdata_test():
     # plot_debugging_folded_view(phases=phases_full, mag=mag_full, err=None, title="The whole interval")
 
     # ----- O-C stuff ----
-    oc_0, cycles_0 = calculate_oc(jd_extrema, period=period_0, epoch=epoch_0)
+    oc_0, cycles_0 = calculate_oc(jd_extrema, period=period_0, epoch=epoch_0, tweak_oc=-0.02)
     # Let's use for calculation only good data
     mask_2 = jd_extrema > 972  # for parabolic fit
     mask_1 = (jd_extrema > 971) & (jd_extrema < 973)  # for linear fit
@@ -1679,7 +1710,6 @@ def oc_realdata_test():
 
     # TODO: TBD !!!!
 
-
     coeffs_1, cov_1 = fit_linear_oc(cycles=cycles_0[mask_1], oc=oc_0[mask_1], err=jd_err_extrema[mask_1])
 
     a2, b2, c2 = coeffs_2
@@ -1693,7 +1723,7 @@ def oc_realdata_test():
                                   user_period=period_0, user_epoch=epoch_0,
                                   para_coeffs=(a2, b2, c2), para_bounds=(-105, None),
                                   line_coeffs=(a1, b1), line_bounds=(None, -105),
-                                  mode="publication")
+                                  mode="debug")
     return a2, b2, c2
 
 
@@ -1746,8 +1776,8 @@ def period_correction_realdata_test():
 
     # --- Step 1: Initial O-C State ---
     print("\n--- Initial O-C Analysis ---")
-    oc_init, _ = calculate_oc(jd, initial_p, initial_epoch)
-    plot_simple_oc(jd, oc_init)
+    oc_init, _ = calculate_oc(jd, initial_p, initial_epoch, tweak_oc=None)
+    plot_simple_oc(jd, oc_init, err)
 
     # --- Step 2: Period and Epoch Correction ---
     print("\n--- Running Correction ---")
@@ -1757,7 +1787,7 @@ def period_correction_realdata_test():
     # --- Step 3: Final Verification ---
     print("\n--- Final O-C Verification ---")
     oc_final, _ = calculate_oc(jd, corrected_p, corrected_epoch)
-    plot_simple_oc(jd, oc_final, title="Final O-C (Corrected)")
+    plot_simple_oc(jd, oc_final, err, title="Final O-C (Corrected)")
 
     print(f"\nFinal Results:")
     print(f"Period: {corrected_p:.10f} days")
@@ -1765,9 +1795,9 @@ def period_correction_realdata_test():
 
 
 if __name__ == "__main__":
-    period_correction_realdata_test()
+    # period_correction_realdata_test()
     # self_aov_test()
-    # a_, b_, c_ = oc_realdata_test()
+    a_, b_, c_ = oc_realdata_test()
     # print(a_, b_, c_)
     # shift_phase_fold_realdata_test(1.4863704378859311e-06, 2.1802734995277483e-05, 0.0005300522755341337)
 
