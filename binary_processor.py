@@ -302,9 +302,39 @@ def correct_period(minima: np.ndarray, err: Optional[np.ndarray],
     return current_period, current_epoch
 
 
-def report_period_change(a: float, P: float) -> float:
-    """Calculates the dimensionless period change rate dP/dt = (2 * a) / P."""
-    return (2.0 * a) / P
+def report_period_change(a: float, a_err: float, P: float, p_err: float):
+    """
+    Calculates the dimensionless period change rate dP/dt = (2 * a) / P and its error
+    """
+
+    # Dimensionless Rate (dP/dt)
+    rate = (2.0 * a) / P
+
+    # Error Propagation (Quadrature)
+    # Relative errors
+    rel_err_a = a_err / abs(a)
+    rel_err_p = p_err / P
+
+    # Combined relative error
+    rel_err_total = np.sqrt(rel_err_a ** 2 + rel_err_p ** 2)
+
+    # Absolute error in the rate
+    rate_err = abs(rate) * rel_err_total
+
+    # 3. Conversion to seconds per year (for human readability)
+    sec_per_year_const = 31557600
+    spy = rate * sec_per_year_const
+    spy_err = rate_err * sec_per_year_const
+
+    print("\n" + "=" * 40)
+    print("PERIOD CHANGE ANALYSIS (Full Error Budget)")
+    print("=" * 40)
+    print(f"Rate (dP/dt):  {rate:.4e} ± {rate_err:.4e}")
+    print(f"Change/Year:   {spy:.4f} ± {spy_err:.4f} seconds/year")
+    print("-" * 40)
+    print(f"Contribution from a: {rel_err_a * 100:.2f}%")
+    print(f"Contribution from P: {rel_err_p * 100:.2f}%")
+    print("=" * 40)
 
 
 #  ==================  PHASE FOLDING stuff  =================
@@ -1651,7 +1681,7 @@ def oc_realdata_test():
     #                            jd_ext=jd_extrema, jd_err_ext=jd_err_extrema)
     period_0 = 0.0549984613
     epoch_0 = 978.4875
-    phases_full = fold_lightcurve(jd_full, period=period_0, epoch=epoch_0)
+    # phases_full = fold_lightcurve(jd_full, period=period_0, epoch=epoch_0)
     # plot_debugging_folded_view(phases=phases_full, mag=mag_full, err=None, title="The whole interval")
 
     # ----- O-C stuff ----
@@ -1663,33 +1693,34 @@ def oc_realdata_test():
     coeffs_2, cov_2 = fit_quadratic_oc(cycles=cycles_0[mask_2], oc=oc_0[mask_2], err=jd_err_extrema[mask_2])
 
     # here add all physics from oc_fit.py:
-    #     a_err, b_err, c_err = np.sqrt(np.diag(cov))
-    #
+    a, b, c = coeffs_2
+    a_err, b_err, c_err = np.sqrt(np.diag(cov_2))
+    # #
     # # --- Calculate Minimum of Parabola ---
     # # For y = ax^2 + bx + c, the extremum is at x = -b / (2a)
     # # This represents the cycle number of the true minimum
     # E_min = -b / (2 * a)
-    #
+    # #
     # # Propagation of error for E_min (simplified)
     # # sigma_E = |E_min| * sqrt((sig_b/b)^2 + (sig_a/a)^2)
     # E_min_err = abs(E_min) * np.sqrt((b_err / b) ** 2 + (a_err / a) ** 2)
-    #
+    # #
     # # Convert cycle minimum back to JD time
-    # t_min = user_epoch + (E_min * user_period)
-    # t_min_err = E_min_err * user_period
-    #
+    # t_min = epoch_0 + (E_min * period_0)
+    # t_min_err = E_min_err * period_0
+    # #
     # # Calculate the rate dP/dt
-    # rate_dp_dt = (2 * a) / user_period
-    # rate_err = (2 * a_err) / user_period
-    #
+    # rate_dp_dt = (2 * a) / period_0
+    # rate_err = (2 * a_err) / period_0
+    # #
     # # Convert to seconds per year for a readable result
     # # (1 year = 31 557600 seconds = (365*24 + 6)*60*60)
     # seconds_per_year = rate_dp_dt * 31557600
     # seconds_per_year_err = rate_err * 31557600
-    #
+    # #
     # print(f"Dimensionless rate (dP/dt): {rate_dp_dt:.4e} ± {rate_err:.4e}")
     # print(f"Period change: {seconds_per_year:.4f} ± {seconds_per_year_err:.4f} seconds/year")
-    # # --- Report ---
+    # --- Report ---
     # print("-" * 30)
     # print(f"FIT RESULTS (O-C = aE² + bE + c):")
     # print(f"a: {a:.4e} ± {a_err:.4e}")
@@ -1700,15 +1731,7 @@ def oc_realdata_test():
     # print(f"T_min = {t_min:.6f} ± {t_min_err:.6f}")
     # print("-" * 30)
     #
-    # print('New Report')
-    # user_period_err = 0.0001
-    # report_period_change(a, a_err, user_period, user_period_err)
-    # # --- Plotting ---
-    # plt.figure(figsize=(16, 10))
-    #
-    # lll
-
-    # TODO: TBD !!!!
+    report_period_change(a, a_err, P=period_0, p_err=0.0001)
 
     coeffs_1, cov_1 = fit_linear_oc(cycles=cycles_0[mask_1], oc=oc_0[mask_1], err=jd_err_extrema[mask_1])
 
