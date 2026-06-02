@@ -17,7 +17,6 @@ from scipy.special import ndtri
 from scipy.stats import f as f_dist
 
 # Set global formatting profile
-# plt.rcParams.update({'font.size': 14})
 plt.rcParams.update({'font.size': 18})  # Set global font size
 
 publication_mode_params = {
@@ -31,19 +30,9 @@ publication_mode_params = {
     "lines.linewidth": 2,
     "axes.linewidth": 1.2
 }
-labelspacing=0.2
+labelspacing = 0.2
 
-# publication_mode_params = {
-#             "font.family": "serif",
-#             "font.size": 14,
-#             "axes.titlesize": 16,
-#             "axes.labelsize": 16,
-#             "xtick.labelsize": 14,
-#             "ytick.labelsize": 14,
-#             "legend.fontsize": 13,
-#             "lines.linewidth": 2,
-#             "axes.linewidth": 1.2
-#         }
+
 # ==========================  INPUT/OUTPUT/CUTOUT ============
 
 
@@ -181,16 +170,6 @@ def calculate_oc(minima: np.ndarray, period: float, epoch: float,
     if tweak_oc is not None:
         oc_values[oc_values <= tweak_oc] += period
 
-    # plt.figure(figsize=(16, 10))
-    # plt.scatter(cycle_numbers, oc_values, color='b', label='O-C values')
-    # plt.axhline(0, color='r', linestyle='--', lw=1)
-    # plt.xlabel("Time [JD]")
-    # plt.ylabel("O-C [days]")
-    # plt.title('O-C vs cycles')
-    # plt.grid(True)
-    # plt.legend()
-    # plt.show()
-
     return oc_values, cycle_numbers
 
 
@@ -243,7 +222,10 @@ def fit_linear(t: np.ndarray, err: Optional[np.ndarray],
 def fit_quadratic_oc(cycles: np.ndarray,
                      oc: np.ndarray,
                      err: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """Fits an O-C vs cycle number distribution with a parabolic 2nd order polynomial."""
+    """
+    Fits an O-C vs cycle number distribution with a parabolic 2nd order polynomial
+    O-C = a2 * E^2 + b2 * E + c2
+    """
     if err is not None:
         weights = 1.0 / np.where(err == 0, 1e-6, err)
         coeffs, cov = np.polyfit(cycles, oc, 2, w=weights, cov=True)
@@ -326,7 +308,8 @@ def correct_period(minima: np.ndarray, err: Optional[np.ndarray],
     return current_period, current_epoch
 
 
-def report_period_change(a: float, a_err: float, P: float, p_err: float):
+def report_period_change(a: float, a_err: float, P: float, p_err: float) \
+        -> Tuple[float, float]:
     """
     Calculates the dimensionless period change rate dP/dt = (2 * a) / P and its error
     """
@@ -350,6 +333,9 @@ def report_period_change(a: float, a_err: float, P: float, p_err: float):
     spy = rate * sec_per_year_const
     spy_err = rate_err * sec_per_year_const
 
+    pdot_p = rate / P       # 1/days
+    pdot_p_err = (2.0 * a_err) / (P ** 2)   # 1/days
+
     print("\n" + "=" * 40)
     print("PERIOD CHANGE ANALYSIS (Full Error Budget)")
     print("=" * 40)
@@ -359,6 +345,7 @@ def report_period_change(a: float, a_err: float, P: float, p_err: float):
     print(f"Contribution from a: {rel_err_a * 100:.2f}%")
     print(f"Contribution from P: {rel_err_p * 100:.2f}%")
     print("=" * 40)
+    return rate, rate_err
 
 
 #  ==================  PHASE FOLDING stuff  =================
@@ -584,7 +571,7 @@ class AoVResult:
         return "\n".join(lines)
 
 
-# def aov_test(
+# def aov_test_back(
 #         # region fold-ready
 #         phases: np.ndarray,
 #         mag: np.ndarray,
@@ -763,6 +750,7 @@ class AoVResult:
 #
 #     return result
 
+
 def aov_test(
         # region fold-ready
         phases: np.ndarray,
@@ -775,14 +763,42 @@ def aov_test(
 ) -> AoVResult:
     """
     Perform the Schwarzenberg-Czerny AoV (Analysis of Variance) test on a folded lightcurve.
-    The phase grid is shifted so that phase 0.0/1.0 falls precisely at the center of a bin.
 
     The test statistic is:
+
         AoV = MS_between / MS_within
 
     where MS = mean square (sum of squares / degrees of freedom).
+
+    Under the null hypothesis (no phase-dependent signal), AoV follows an
+    F-distribution with (n_bins - 1, N - n_bins) degrees of freedom.
+
+    If mag_err is provided, observations are weighted by w_i = 1 / sigma_i^2,
+    and the weighted generalization of the F-statistic is used, which gives
+    more influence to high-quality observations.
+
+    The phase grid is shifted so that phase 0.0/1.0 falls precisely at the centre of a bin.
+
+    Parameters
+    ----------
+    phases : np.ndarray
+        Pre-folded fractional observation phases mapped onto [0.0, 1.0).
+    mag : np.ndarray
+        Magnitudes (or fluxes) at each corresponding epoch phase point.
+    n_bins : int, optional
+        Number of equal-width phase bins. Default 10.
+    mag_err : np.ndarray or None, optional
+        1-sigma observational uncertainties. If None, unweighted AoV is used.
+    significance_level : float, optional
+        Alpha level for the is_significant flag. Default 0.01 (1%).
+    min_points_per_bin : int, optional
+        Bins with fewer points than this are excluded from the calculation.
+
+    Returns
+    -------
+    AoVResult dataclass string format profile outputs.
     """
-    # 1. Broad Shape and Alignment Validations
+    # Broad Shape and Alignment Validations
     phases = np.asarray(phases, dtype=float)
     mag = np.asarray(mag, dtype=float)
 
@@ -806,7 +822,7 @@ def aov_test(
         nan_count = np.isnan(mag_err).sum()
         if nan_count > 0:
             nan_percentage = (nan_count / len(mag_err)) * 100.0
-            max_nan_percentage = 30.0
+            max_nan_percentage = 51.0
             if nan_percentage < max_nan_percentage:
                 penalty_error = np.nanpercentile(mag_err, 90)
                 mag_err = mag_err.copy()  # Avoid modifying original array in-place
@@ -911,6 +927,7 @@ def aov_test(
     log_p = f_dist.logsf(f_stat, df_between, df_within)
     p_value = np.exp(log_p)
 
+    #  Accurate one-tailed mapping from log-probability to Gaussian Sigmas
     sigmas_log = -ndtri(p_value) if p_value > 0.0 else -ndtri(np.exp(log_p))
     if log_p > -1e-12:
         sigmas_log = 0.0
@@ -924,6 +941,7 @@ def aov_test(
         significance_level=significance_level, weighted=weighted, bin_edges=shifted_bin_edges
     )
 
+    print(result)
     return result
 
 
@@ -1180,34 +1198,35 @@ def plot_piecewise_oc_with_period(
         user_period: float,
         user_epoch: float,
         para_coeffs: Optional[Tuple[float, float, float]] = None,
+        para_coeffs_err: Optional[Tuple[float, float, float]] = None,
         para_bounds: Optional[Tuple[Optional[float], Optional[float]]] = None,
         line_coeffs: Optional[Tuple[float, float]] = None,
         line_bounds: Optional[Tuple[Optional[float], Optional[float]]] = None,
         mode: str = "debug",
         title: str = "O-C and Period Evolution",
         filename_base: str = "oc_piecewise_diagram",
-        jd0: float = 2460000
+        jd0: float = 2460000,
+        stage_b_start_cycle: Optional[float] = -105,  # <-- Added: Cycle where Stage B begins
+        stage_a_start_cycle: Optional[float] = None  # <-- Added: Left boundary (optional)
         # endregion
 ) -> None:
     """
     Plots O-C points alongside separate piecewise linear/parabolic fits,
     and overlays the instantaneous orbital period line using a secondary Y-axis.
-    Supports both 'debug' and 'publication' layout profiles.
+    Highlights Cataclysmic Variable structural evolution (Stage A vs Stage B).
     """
-    # 1. Period Plot Styling Configurations
     period_line_color = "forestgreen"
-    period_line_parabolic_style = "-"  # Solid line style
-    period_line_linear_style = "--"  # Solid line style
+    period_line_parabolic_style = "-"
+    period_line_linear_style = "--"
     period_line_width = 2.5
 
-    # 2. Setup typography standards based on operating mode
     if mode.lower() == "publication":
         plt.rcParams.update(publication_mode_params)
         fig, ax_oc = plt.subplots(figsize=(10, 7))
     else:
         fig, ax_oc = plt.subplots(figsize=(13, 8))
 
-    ax_p = ax_oc.twinx()  # The secondary right axis for the instantaneous period line
+    ax_p = ax_oc.twinx()
 
     cycles_clean = np.asarray(cycles, dtype=float)
     oc_clean = np.asarray(oc, dtype=float)
@@ -1227,11 +1246,11 @@ def plot_piecewise_oc_with_period(
             capsize=5, label='Observed O-C', markersize=8, zorder=4
         )
 
-    period_plot_elements_parabolic = []
-
     # Render Parabolic Segment Model Fit
+    period_plot_elements_parabolic = []
     if para_coeffs is not None:
         a, b, c = para_coeffs
+        print(f'\n\n\n\n {a=}')
         p_start = para_bounds[0] if (para_bounds and para_bounds[0] is not None) else c_min
         p_end = para_bounds[1] if (para_bounds and para_bounds[1] is not None) else c_max
 
@@ -1240,8 +1259,7 @@ def plot_piecewise_oc_with_period(
         ax_oc.plot(E_para, oc_para, color='crimson', linestyle='-', lw=2.5,
                    label='Parabolic Fit', zorder=3)
 
-        # Continuous instantaneous period track: P(E) = P_0 + 2aE + b
-        P_para = user_period + 2.0 * a * E_para + b
+        P_para = user_period + b + 2.0 * a * E_para
         period_plot_elements_parabolic.append((E_para, P_para))
 
     # Render Linear Segment Model Fit
@@ -1254,13 +1272,11 @@ def plot_piecewise_oc_with_period(
         E_line = np.linspace(l_start, l_end, 200)
         oc_line = slope * E_line + intercept
 
-        line_style = '--' if mode.lower() == "publication" else '--'
-        ax_oc.plot(E_line, oc_line, color='darkorange', linestyle=line_style, lw=2.5,
+        ax_oc.plot(E_line, oc_line, color='darkorange', linestyle='--', lw=2.5,
                    label='Linear Fit', zorder=3)
 
-        # Constant period track across stable regime: P(E) = P_0 + slope
         P_line = np.full_like(E_line, user_period + slope)
-        period_plot_elements_linear.append((E_line, P_line))  # We actually want it, but separate one
+        period_plot_elements_linear.append((E_line, P_line))
 
     # Render the Continuous Instantaneous Period Track Elements
     for i, (E_seg, P_seg) in enumerate(period_plot_elements_parabolic):
@@ -1271,10 +1287,46 @@ def plot_piecewise_oc_with_period(
         )
 
     for i, (E_seg, P_seg) in enumerate(period_plot_elements_linear):
-        lbl = 'Instantaneous Period $P(E)$' if i == 0 else ""
         ax_p.plot(
             E_seg, P_seg, color=period_line_color, linestyle=period_line_linear_style,
-            lw=period_line_width, label=lbl, zorder=2
+            lw=period_line_width, zorder=2
+        )
+
+    # --------- Shaded Background Panels for Stage A and Stage B ---
+    if stage_b_start_cycle is not None:
+        # Freeze the axis precisely where Matplotlib naturally placed the viewport
+        x_min_visible, x_max_visible = ax_oc.get_xlim()
+        ax_oc.set_xlim(x_min_visible, x_max_visible)
+
+        # Assign the exact edge coordinates of the canvas box
+        left_bound = x_min_visible
+        right_bound = x_max_visible
+
+        # left_bound = stage_a_start_cycle if stage_a_start_cycle is not None else c_min
+        # right_bound = c_max
+
+        # Draw Background Shading Spans (zorder=0 puts them in the absolute back)
+        ax_oc.axvspan(left_bound, stage_b_start_cycle, color="royalblue", alpha=0.07, zorder=0)
+        ax_oc.axvspan(stage_b_start_cycle, right_bound, color="crimson", alpha=0.07, zorder=0)
+
+        # Add a subtle dotted vertical line marking the transition boundary
+        ax_oc.axvline(stage_b_start_cycle, color="gray", linestyle=":", linewidth=1.2, zorder=1)
+
+        # Labels centered in each stage window at the top (y=0.95 relative coordinates)
+        mid_stage_a = left_bound + (stage_b_start_cycle - left_bound) / 2.0
+        mid_stage_b = stage_b_start_cycle + (right_bound - stage_b_start_cycle) / 2.0
+        almost_end_stage_b = right_bound - (right_bound - stage_b_start_cycle) / 5.0
+
+        ax_oc.text(
+            mid_stage_a, 0.1, "Stage A?", transform=ax_oc.get_xaxis_transform(),
+            fontsize=12, fontweight="bold", fontstyle="italic", color="royalblue",
+            va="top", ha="center"
+        )
+        ax_oc.text(
+            # mid_stage_b, y=0.1, s="Stage B", transform=ax_oc.get_xaxis_transform(),
+            almost_end_stage_b, y=0.1, s="Stage B", transform=ax_oc.get_xaxis_transform(),
+            fontsize=12, fontweight="bold", fontstyle="italic", color="crimson",
+            va="top", ha="center"
         )
 
     # Axis Styling and Label Setup
@@ -1294,7 +1346,35 @@ def plot_piecewise_oc_with_period(
     # Unify Custom Dual-Axis Legends
     handles_oc, labels_oc = ax_oc.get_legend_handles_labels()
     handles_p, labels_p = ax_p.get_legend_handles_labels()
-    ax_oc.legend(handles_oc + handles_p, labels_oc + labels_p, loc='upper left', frameon=frame_display)
+
+    # Add Pdot/P on the graph as a legend:
+    from matplotlib.patches import Patch
+    proxy_handle = Patch(visible=False)
+    if para_coeffs is not None and para_coeffs_err is not None:
+        a = para_coeffs[0]
+        a_err = para_coeffs_err[0]
+        # dp_p = (2.0 * a) / user_period
+        dp_dt, dp_dt_err = report_period_change(a, a_err, P=user_period, p_err=0.0001)
+
+        rate_label = fr"$dP/dt$: ${dp_dt:.2e} \pm {dp_dt_err:.2e}$"
+        # rate_label = fr'$\\dot{{P}}/P = {pdot_p:.2e} \pm {pdot_p_err:.2e}$'
+        # rate_label = fr"$\dot{{P}} = {dp_dt:.2e} \pm {dp_dt_err:.2e}$"
+
+    else:
+        rate_label = ''
+
+    all_handles = handles_oc + handles_p + [proxy_handle]
+    all_labels = labels_oc + labels_p + [rate_label]
+
+    # ax1.plot(
+    #     E_fine, oc_fit, color='red', linestyle='-', lw=2.5,
+    #     label=f'Parabolic Fit\n$\\dot{{P}}/P = {dp_p:.2e}$', zorder=2
+    # )
+    ax_oc.legend(all_handles, all_labels,
+                 # loc='upper left',
+                 loc='upper center',  # Anchor the top-centre point of the legend box
+                 bbox_to_anchor=(0.33, 1.0),  # at 1/3 X-axis and 1.0 Y-axis height
+                 frameon=frame_display)
 
     # Top Horizontal Axis Setup for absolute Julian Dates (JD)
     ax_jd = ax_oc.twiny()
@@ -1315,6 +1395,152 @@ def plot_piecewise_oc_with_period(
         print(f"[Export] Publication figures saved cleanly to {filename_base}.pdf/.png")
 
     plt.show()
+
+
+# def plot_piecewise_oc_with_period_back(
+#         # region fold
+#         cycles: np.ndarray,
+#         oc: np.ndarray,
+#         jd_err: np.ndarray,
+#         user_period: float,
+#         user_epoch: float,
+#         para_coeffs: Optional[Tuple[float, float, float]] = None,
+#         para_bounds: Optional[Tuple[Optional[float], Optional[float]]] = None,
+#         line_coeffs: Optional[Tuple[float, float]] = None,
+#         line_bounds: Optional[Tuple[Optional[float], Optional[float]]] = None,
+#         mode: str = "debug",
+#         title: str = "O-C and Period Evolution",
+#         filename_base: str = "oc_piecewise_diagram",
+#         jd0: float = 2460000
+#         # endregion
+# ) -> None:
+#     """
+#     Plots O-C points alongside separate piecewise linear/parabolic fits,
+#     and overlays the instantaneous orbital period line using a secondary Y-axis.
+#     Supports both 'debug' and 'publication' layout profiles.
+#     """
+#     # 1. Period Plot Styling Configurations
+#     period_line_color = "forestgreen"
+#     period_line_parabolic_style = "-"  # Solid line style
+#     period_line_linear_style = "--"  # Solid line style
+#     period_line_width = 2.5
+#
+#     # 2. Setup typography standards based on operating mode
+#     if mode.lower() == "publication":
+#         plt.rcParams.update(publication_mode_params)
+#         fig, ax_oc = plt.subplots(figsize=(10, 7))
+#     else:
+#         fig, ax_oc = plt.subplots(figsize=(13, 8))
+#
+#     ax_p = ax_oc.twinx()  # The secondary right axis for the instantaneous period line
+#
+#     cycles_clean = np.asarray(cycles, dtype=float)
+#     oc_clean = np.asarray(oc, dtype=float)
+#     err_clean = np.asarray(jd_err, dtype=float)
+#     c_min, c_max = np.min(cycles_clean), np.max(cycles_clean)
+#
+#     # Plot Empirical O-C Data Points
+#     if mode.lower() == "publication":
+#         ax_oc.errorbar(
+#             cycles_clean, oc_clean, yerr=err_clean, fmt='o',
+#             color='black', mfc='white', mec='black', mew=1.5,
+#             capsize=0, label='Observed $O-C$', markersize=7, zorder=4
+#         )
+#     else:
+#         ax_oc.errorbar(
+#             cycles_clean, oc_clean, yerr=err_clean, fmt='bo',
+#             capsize=5, label='Observed O-C', markersize=8, zorder=4
+#         )
+#
+#     period_plot_elements_parabolic = []
+#
+#     # Render Parabolic Segment Model Fit
+#     if para_coeffs is not None:
+#         a, b, c = para_coeffs
+#         p_start = para_bounds[0] if (para_bounds and para_bounds[0] is not None) else c_min
+#         p_end = para_bounds[1] if (para_bounds and para_bounds[1] is not None) else c_max
+#
+#         E_para = np.linspace(p_start, p_end, 200)
+#         oc_para = a * E_para ** 2 + b * E_para + c
+#         ax_oc.plot(E_para, oc_para, color='crimson', linestyle='-', lw=2.5,
+#                    label='Parabolic Fit', zorder=3)
+#
+#         # Continuous instantaneous period track: P(E) = P_0 + 2aE + b
+#         P_para = user_period + 2.0 * a * E_para + b
+#         period_plot_elements_parabolic.append((E_para, P_para))
+#
+#     # Render Linear Segment Model Fit
+#     period_plot_elements_linear = []
+#     if line_coeffs is not None:
+#         slope, intercept = line_coeffs
+#         l_start = line_bounds[0] if (line_bounds and line_bounds[0] is not None) else c_min
+#         l_end = line_bounds[1] if (line_bounds and line_bounds[1] is not None) else c_max
+#
+#         E_line = np.linspace(l_start, l_end, 200)
+#         oc_line = slope * E_line + intercept
+#
+#         line_style = '--' if mode.lower() == "publication" else '--'
+#         ax_oc.plot(E_line, oc_line, color='darkorange', linestyle=line_style, lw=2.5,
+#                    label='Linear Fit', zorder=3)
+#
+#         # Constant period track across stable regime: P(E) = P_0 + slope
+#         P_line = np.full_like(E_line, user_period + slope)
+#         period_plot_elements_linear.append((E_line, P_line))  # We actually want it, but separate one
+#
+#     # Render the Continuous Instantaneous Period Track Elements
+#     for i, (E_seg, P_seg) in enumerate(period_plot_elements_parabolic):
+#         lbl = 'Instantaneous Period $P(E)$' if i == 0 else ""
+#         ax_p.plot(
+#             E_seg, P_seg, color=period_line_color, linestyle=period_line_parabolic_style,
+#             lw=period_line_width, label=lbl, zorder=2
+#         )
+#
+#     for i, (E_seg, P_seg) in enumerate(period_plot_elements_linear):
+#         lbl = 'Instantaneous Period $P(E)$' if i == 0 else ""
+#         ax_p.plot(
+#             E_seg, P_seg, color=period_line_color, linestyle=period_line_linear_style,
+#             lw=period_line_width, zorder=2
+#             # lw=period_line_width, label=lbl, zorder=2
+#         )
+#
+#     # Axis Styling and Label Setup
+#     ax_oc.set_xlabel("Cycle Number ($E$)")
+#     ax_oc.set_ylabel("$O-C$ [days]", color='black')
+#     ax_p.set_ylabel("Instantaneous Period $P$ [days]", color=period_line_color, rotation=270, labelpad=25)
+#     ax_p.tick_params(axis='y', labelcolor=period_line_color)
+#
+#     if mode.lower() == "publication":
+#         ax_oc.spines['right'].set_visible(False)
+#         ax_p.spines['top'].set_visible(False)
+#         frame_display = False
+#     else:
+#         ax_oc.grid(True, linestyle=':', alpha=0.5)
+#         frame_display = True
+#
+#     # Unify Custom Dual-Axis Legends
+#     handles_oc, labels_oc = ax_oc.get_legend_handles_labels()
+#     handles_p, labels_p = ax_p.get_legend_handles_labels()
+#     ax_oc.legend(handles_oc + handles_p, labels_oc + labels_p, loc='upper left', frameon=frame_display)
+#
+#     # Top Horizontal Axis Setup for absolute Julian Dates (JD)
+#     ax_jd = ax_oc.twiny()
+#     m1, m2 = ax_oc.get_xlim()
+#     ax_jd.set_xlim(user_period * m1 + user_epoch, user_period * m2 + user_epoch)
+#     ax_jd.set_xlabel(f"Time [JD{jd0}+]", labelpad=12)
+#
+#     if mode.lower() == "publication":
+#         ax_jd.spines['right'].set_visible(False)
+#     else:
+#         plt.title(title, pad=20 if mode.lower() == "debug" else 25)
+#
+#     plt.tight_layout()
+#
+#     if mode.lower() == "publication":
+#         plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
+#         plt.savefig(f"{filename_base}.png", dpi=300, bbox_inches='tight')
+#         print(f"[Export] Publication figures saved cleanly to {filename_base}.pdf/.png")
+#
+#     plt.show()
 
 
 def plot_debugging_folded_view(phases: np.ndarray, mag: np.ndarray, err: Optional[np.ndarray],
@@ -1343,345 +1569,345 @@ def plot_debugging_folded_view(phases: np.ndarray, mag: np.ndarray, err: Optiona
     plt.show()
 
 
-def plot_aov_step_model_back(
-        # region fold
-        phases: np.ndarray,
-        mag: np.ndarray,
-        aov_result: AoVResult,
-        mag_err: Optional[np.ndarray] = None,
-        model_style: str = "step",
-        mode: str = "debug",
-        ylim: Optional[Tuple[float, float]] = None,
-        y_label='Magnitude / Flux',
-        title_suffix: str = "",
-        filename_base: str = "aov_profile",
-        show_legend=True,
-        # endregion
-) -> None:
-    """
-    Plots a phase-folded light curve across two full cycles, overlaid with either
-    the standard AoV step model or a broken line tracking bin centers with errors on the mean.
-    Supports both 'debug' and 'publication' layout profiles.
+# def plot_aov_step_model_back(
+#         # region fold
+#         phases: np.ndarray,
+#         mag: np.ndarray,
+#         aov_result: AoVResult,
+#         mag_err: Optional[np.ndarray] = None,
+#         model_style: str = "step",
+#         mode: str = "debug",
+#         ylim: Optional[Tuple[float, float]] = None,
+#         y_label='Magnitude / Flux',
+#         title_suffix: str = "",
+#         filename_base: str = "aov_profile",
+#         show_legend=True,
+#         # endregion
+# ) -> None:
+#     """
+#     Plots a phase-folded light curve across two full cycles, overlaid with either
+#     the standard AoV step model or a broken line tracking bin centers with errors on the mean.
+#     Supports both 'debug' and 'publication' layout profiles.
+#
+#     Parameters
+#     ----------
+#     phases : np.ndarray
+#         Pre-folded fractional observation phases mapped onto [0.0, 1.0).
+#     mag : np.ndarray
+#         Observed magnitudes or fluxes.
+#     aov_result : AoVResult
+#         The dataclass result output from the aov_test function.
+#     mag_err : np.ndarray or None, optional
+#         1-sigma observational uncertainties.
+#     model_style : str, default "step"
+#         Options: 'step' (staircase binned model) or 'broken_line' (linear joints with error on mean).
+#     mode : str, default "debug"
+#         Selection profile toggling between 'debug' layout and 'publication' layout.
+#     ylim : tuple of (float, float) or None, optional
+#         Explicit limits for the Y-axis (magnitude/flux). If provided, handles astronomical
+#         inversion automatically. If None, scales dynamically based on data extremes.
+#     y_label : string
+#         y-axis label on the plot
+#     show_legend : bool
+#         Show or not a legend on the plot
+#     title_suffix : str, optional
+#         Additional text to append to the plot title (e.g., target name).
+#     filename_base : str, default "aov_profile"
+#         Root file string used to export high-DPI vector graphics files in publication mode.
+#     """
+#     # Setup typography and style standards based on operating mode
+#     if mode.lower() == "publication":
+#         plt.rcParams.update(publication_mode_params)
+#         fig, ax = plt.subplots(figsize=(10, 7))
+#
+#         # Publication styling attributes
+#         obs_color = "darkgray"
+#         obs_alpha = 0.5
+#         model_color = "crimson"
+#         node_color = "crimson"
+#         # grand_mean_color = "gray"
+#         grand_mean_color = "black"
+#         frame_display = False
+#         grid_display = False
+#     else:
+#         fig, ax = plt.subplots(figsize=(14, 8))
+#         # Debug/Exploratory styling attributes
+#         obs_color = "darkgray"
+#         obs_alpha = 0.5
+#         model_color = "crimson"
+#         node_color = "crimson"
+#         # node_color = "darkred"
+#         grand_mean_color = "black"
+#         frame_display = True
+#         grid_display = True
+#
+#     # Clean finite observations
+#     mask = np.isfinite(phases) & np.isfinite(mag)
+#     if mag_err is not None:
+#         mask &= np.isfinite(mag_err) & (mag_err > 0)
+#
+#     phases_c = phases[mask]
+#     mag_c = mag[mask]
+#     err_c = mag_err[mask] if mag_err is not None else None
+#
+#     # Duplicate data over 2 cycles for phase wrap visualization
+#     plot_phase = np.concatenate([phases_c, phases_c + 1.0])
+#     plot_mag = np.concatenate([mag_c, mag_c])
+#     plot_err = np.concatenate([err_c, err_c]) if err_c is not None else None
+#
+#     # Plot underlying observation data points
+#     if plot_err is not None:
+#         plt.errorbar(
+#             plot_phase, plot_mag, yerr=plot_err, fmt='o', color=obs_color,
+#             markersize=5, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
+#         )
+#     else:
+#         plt.scatter(
+#             plot_phase, plot_mag, color=obs_color, s=8, alpha=obs_alpha,
+#             label='Observations', zorder=1
+#         )
+#
+#     # Handle Model Selection
+#     if model_style.lower() == "step":
+#         edges = aov_result.bin_edges
+#         means = aov_result.bin_means
+#         clean_means = np.where(np.isnan(means), np.nan, means)
+#
+#         step_phases = edges
+#         step_mags = np.append(clean_means, clean_means[-1])
+#
+#         step_phases_plot = np.concatenate([step_phases[:-1], step_phases + 1.0])
+#         step_mags_plot = np.concatenate([clean_means, step_mags])
+#
+#         plt.step(
+#             step_phases_plot, step_mags_plot, where='post', color=model_color,
+#             linewidth=2.5, zorder=5, label='AoV Step Model'
+#         )
+#
+#     elif model_style.lower() == "broken_line":
+#         bin_centers = aov_result.bin_phases
+#         bin_means = aov_result.bin_means
+#         bin_stds = aov_result.bin_stds
+#         bin_counts = aov_result.bin_counts
+#
+#         # Calculate standard error on the mean: sigma_mean = sigma / sqrt(N)
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             err_on_mean = bin_stds / np.sqrt(bin_counts)
+#         err_on_mean = np.where(np.isnan(err_on_mean), 0.0, err_on_mean)
+#
+#         line_phases = np.concatenate([bin_centers, bin_centers + 1.0])
+#         line_mags = np.concatenate([bin_means, bin_means])
+#         line_errs = np.concatenate([err_on_mean, err_on_mean])
+#
+#         # Plot the connected broken line path
+#         # line_style = '-' if mode.lower() == "debug" else '--'
+#         line_style = '-' if mode.lower() == "debug" else '-'
+#         plt.plot(
+#             line_phases, line_mags, color=model_color, linestyle=line_style,
+#             linewidth=2.5, zorder=4, label='Binned Mean Profile'
+#         )
+#         # Overlay standard error bars on the mean nodes
+#         plt.errorbar(
+#             line_phases, line_mags, yerr=line_errs, fmt='o', color=node_color,
+#             ecolor=node_color, mfc='white' if mode.lower() == "publication" else node_color,
+#             markersize=6, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
+#             zorder=5, label=r'Bin Means ($\pm \sigma_{\mathrm{mean}}$)'
+#         )
+#
+#     else:
+#         raise ValueError(f"Unknown model_style '{model_style}'. Use 'step' or 'broken_line'.")
+#
+#     # Global Canvas Aesthetics
+#     plt.axhline(
+#         aov_result.grand_mean, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7,
+#         label=f'Grand Mean ({aov_result.grand_mean:.4f})'
+#     )
+#     plt.axvline(1, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
+#
+#     # plt.gca().invert_yaxis()  # Standard astronomical scaling  --- we do not need it with y-axis limits set
+#     plt.xlim(0.0, 2.0)
+#     plt.xlabel('Orbital Phase')
+#     plt.ylabel(y_label)
+#
+#     # Apply Y-axis boundaries safely taking inversion into account
+#     if ylim is not None:
+#         y_val1, y_val2 = ylim
+#         # For standard magnitudes, ensure numerical larger value (fainter) is at the bottom
+#         plt.ylim(max(y_val1, y_val2), min(y_val1, y_val2))
+#     else:
+#         plt.gca().invert_yaxis()  # Default behavior: dynamic inversion
+#
+#     title_str = (
+#         f"AoV Phase Profile (Bins: {aov_result.n_bins})\n"
+#         f"F-Stat: {aov_result.f_statistic:.2f} | Significance: {aov_result.n_sigma:.1f}$\sigma$"
+#     )
+#     if title_suffix:
+#         title_str += f" | {title_suffix}"
+#
+#     if mode.lower() == 'debug':
+#         plt.title(title_str)
+#     else:
+#         print(title_str)
+#
+#     if show_legend:
+#         plt.legend(loc='best',
+#                    labelspacing=labelspacing,  # decrease vertical space between legend rows
+#                    borderpad=0.3,
+#                    frameon=frame_display)
+#
+#     if grid_display:
+#         plt.grid(True, linestyle=':', alpha=0.6)
+#
+#     plt.tight_layout()
+#
+#     # Save output configurations directly if in publication mode
+#     if mode.lower() == "publication":
+#         plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
+#         plt.savefig(f"{filename_base}.png", dpi=300, bbox_inches='tight')
+#         print(f"[Export] Saved publication vector figures to {filename_base}.pdf/.png")
+#
+#     plt.show()
 
-    Parameters
-    ----------
-    phases : np.ndarray
-        Pre-folded fractional observation phases mapped onto [0.0, 1.0).
-    mag : np.ndarray
-        Observed magnitudes or fluxes.
-    aov_result : AoVResult
-        The dataclass result output from the aov_test function.
-    mag_err : np.ndarray or None, optional
-        1-sigma observational uncertainties.
-    model_style : str, default "step"
-        Options: 'step' (staircase binned model) or 'broken_line' (linear joints with error on mean).
-    mode : str, default "debug"
-        Selection profile toggling between 'debug' layout and 'publication' layout.
-    ylim : tuple of (float, float) or None, optional
-        Explicit limits for the Y-axis (magnitude/flux). If provided, handles astronomical
-        inversion automatically. If None, scales dynamically based on data extremes.
-    y_label : string
-        y-axis label on the plot
-    show_legend : bool
-        Show or not a legend on the plot
-    title_suffix : str, optional
-        Additional text to append to the plot title (e.g., target name).
-    filename_base : str, default "aov_profile"
-        Root file string used to export high-DPI vector graphics files in publication mode.
-    """
-    # Setup typography and style standards based on operating mode
-    if mode.lower() == "publication":
-        plt.rcParams.update(publication_mode_params)
-        fig, ax = plt.subplots(figsize=(10, 7))
 
-        # Publication styling attributes
-        obs_color = "darkgray"
-        obs_alpha = 0.5
-        model_color = "crimson"
-        node_color = "crimson"
-        # grand_mean_color = "gray"
-        grand_mean_color = "black"
-        frame_display = False
-        grid_display = False
-    else:
-        fig, ax = plt.subplots(figsize=(14, 8))
-        # Debug/Exploratory styling attributes
-        obs_color = "darkgray"
-        obs_alpha = 0.5
-        model_color = "crimson"
-        node_color = "crimson"
-        # node_color = "darkred"
-        grand_mean_color = "black"
-        frame_display = True
-        grid_display = True
-
-    # Clean finite observations
-    mask = np.isfinite(phases) & np.isfinite(mag)
-    if mag_err is not None:
-        mask &= np.isfinite(mag_err) & (mag_err > 0)
-
-    phases_c = phases[mask]
-    mag_c = mag[mask]
-    err_c = mag_err[mask] if mag_err is not None else None
-
-    # Duplicate data over 2 cycles for phase wrap visualization
-    plot_phase = np.concatenate([phases_c, phases_c + 1.0])
-    plot_mag = np.concatenate([mag_c, mag_c])
-    plot_err = np.concatenate([err_c, err_c]) if err_c is not None else None
-
-    # Plot underlying observation data points
-    if plot_err is not None:
-        plt.errorbar(
-            plot_phase, plot_mag, yerr=plot_err, fmt='o', color=obs_color,
-            markersize=5, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
-        )
-    else:
-        plt.scatter(
-            plot_phase, plot_mag, color=obs_color, s=8, alpha=obs_alpha,
-            label='Observations', zorder=1
-        )
-
-    # Handle Model Selection
-    if model_style.lower() == "step":
-        edges = aov_result.bin_edges
-        means = aov_result.bin_means
-        clean_means = np.where(np.isnan(means), np.nan, means)
-
-        step_phases = edges
-        step_mags = np.append(clean_means, clean_means[-1])
-
-        step_phases_plot = np.concatenate([step_phases[:-1], step_phases + 1.0])
-        step_mags_plot = np.concatenate([clean_means, step_mags])
-
-        plt.step(
-            step_phases_plot, step_mags_plot, where='post', color=model_color,
-            linewidth=2.5, zorder=5, label='AoV Step Model'
-        )
-
-    elif model_style.lower() == "broken_line":
-        bin_centers = aov_result.bin_phases
-        bin_means = aov_result.bin_means
-        bin_stds = aov_result.bin_stds
-        bin_counts = aov_result.bin_counts
-
-        # Calculate standard error on the mean: sigma_mean = sigma / sqrt(N)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            err_on_mean = bin_stds / np.sqrt(bin_counts)
-        err_on_mean = np.where(np.isnan(err_on_mean), 0.0, err_on_mean)
-
-        line_phases = np.concatenate([bin_centers, bin_centers + 1.0])
-        line_mags = np.concatenate([bin_means, bin_means])
-        line_errs = np.concatenate([err_on_mean, err_on_mean])
-
-        # Plot the connected broken line path
-        # line_style = '-' if mode.lower() == "debug" else '--'
-        line_style = '-' if mode.lower() == "debug" else '-'
-        plt.plot(
-            line_phases, line_mags, color=model_color, linestyle=line_style,
-            linewidth=2.5, zorder=4, label='Binned Mean Profile'
-        )
-        # Overlay standard error bars on the mean nodes
-        plt.errorbar(
-            line_phases, line_mags, yerr=line_errs, fmt='o', color=node_color,
-            ecolor=node_color, mfc='white' if mode.lower() == "publication" else node_color,
-            markersize=6, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
-            zorder=5, label=r'Bin Means ($\pm \sigma_{\mathrm{mean}}$)'
-        )
-
-    else:
-        raise ValueError(f"Unknown model_style '{model_style}'. Use 'step' or 'broken_line'.")
-
-    # Global Canvas Aesthetics
-    plt.axhline(
-        aov_result.grand_mean, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7,
-        label=f'Grand Mean ({aov_result.grand_mean:.4f})'
-    )
-    plt.axvline(1, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
-
-    # plt.gca().invert_yaxis()  # Standard astronomical scaling  --- we do not need it with y-axis limits set
-    plt.xlim(0.0, 2.0)
-    plt.xlabel('Orbital Phase')
-    plt.ylabel(y_label)
-
-    # Apply Y-axis boundaries safely taking inversion into account
-    if ylim is not None:
-        y_val1, y_val2 = ylim
-        # For standard magnitudes, ensure numerical larger value (fainter) is at the bottom
-        plt.ylim(max(y_val1, y_val2), min(y_val1, y_val2))
-    else:
-        plt.gca().invert_yaxis()  # Default behavior: dynamic inversion
-
-    title_str = (
-        f"AoV Phase Profile (Bins: {aov_result.n_bins})\n"
-        f"F-Stat: {aov_result.f_statistic:.2f} | Significance: {aov_result.n_sigma:.1f}$\sigma$"
-    )
-    if title_suffix:
-        title_str += f" | {title_suffix}"
-
-    if mode.lower() == 'debug':
-        plt.title(title_str)
-    else:
-        print(title_str)
-
-    if show_legend:
-        plt.legend(loc='best',
-                   labelspacing=labelspacing,  # decrease vertical space between legend rows
-                   borderpad=0.3,
-                   frameon=frame_display)
-
-    if grid_display:
-        plt.grid(True, linestyle=':', alpha=0.6)
-
-    plt.tight_layout()
-
-    # Save output configurations directly if in publication mode
-    if mode.lower() == "publication":
-        plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
-        plt.savefig(f"{filename_base}.png", dpi=300, bbox_inches='tight')
-        print(f"[Export] Saved publication vector figures to {filename_base}.pdf/.png")
-
-    plt.show()
-
-
-def plot_aov_step_model_works(
-        # region fold
-        phases: np.ndarray,
-        mag: np.ndarray,
-        aov_result: AoVResult,
-        mag_err: Optional[np.ndarray] = None,
-        model_style: str = "step",
-        mode: str = "debug",
-        ylim: Optional[Tuple[float, float]] = None,
-        y_label: str = 'Magnitude / Flux',
-        title_suffix: str = "",
-        filename_base: str = "aov_profile",
-        show_legend: bool = True,
-        ax: Optional[plt.Axes] = None,  # <-- Added parameter for grid alignment
-        # endregion
-) -> None:
-    """
-    Plots a phase-folded light curve across two full cycles. Supports drawing onto
-    an externally managed Matplotlib Axes object for multi-panel combined figures.
-    """
-    standalone = ax is None
-
-    # Setup typography and styles
-    if mode.lower() == "publication":
-        plt.rcParams.update(publication_mode_params)
-        if standalone:
-            fig, ax = plt.subplots(figsize=(10, 7))
-        obs_color, obs_alpha = "darkgray", 0.5
-        model_color, node_color = "crimson", "crimson"
-        grand_mean_color = "black"
-        frame_display, grid_display = False, False
-    else:
-        if standalone:
-            fig, ax = plt.subplots(figsize=(14, 8))
-        obs_color, obs_alpha = "darkgray", 0.5
-        model_color, node_color = "crimson", "crimson"
-        grand_mean_color = "black"
-        frame_display, grid_display = True, True
-
-    # Clean observations
-    mask = np.isfinite(phases) & np.isfinite(mag)
-    if mag_err is not None:
-        mask &= np.isfinite(mag_err) & (mag_err > 0)
-
-    phases_c, mag_c = phases[mask], mag[mask]
-    err_c = mag_err[mask] if mag_err is not None else None
-
-    plot_phase = np.concatenate([phases_c, phases_c + 1.0])
-    plot_mag = np.concatenate([mag_c, mag_c])
-    plot_err = np.concatenate([err_c, err_c]) if err_c is not None else None
-
-    # Plot data points on the designated axis
-    if plot_err is not None:
-        ax.errorbar(
-            plot_phase, plot_mag, yerr=plot_err, fmt='o', color=obs_color,
-            markersize=5, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
-        )
-    else:
-        ax.scatter(
-            plot_phase, plot_mag, color=obs_color, s=8, alpha=obs_alpha,
-            label='Observations', zorder=1
-        )
-
-    # Render Models
-    if model_style.lower() == "step":
-        edges = aov_result.bin_edges
-        means = aov_result.bin_means
-        clean_means = np.where(np.isnan(means), np.nan, means)
-        step_phases = edges
-        step_mags = np.append(clean_means, clean_means[-1])
-        step_phases_plot = np.concatenate([step_phases[:-1], step_phases + 1.0])
-        step_mags_plot = np.concatenate([clean_means, step_mags])
-
-        ax.step(
-            step_phases_plot, step_mags_plot, where='post', color=model_color,
-            linewidth=2.5, zorder=5, label='AoV Step Model'
-        )
-
-    elif model_style.lower() == "broken_line":
-        bin_centers = aov_result.bin_phases
-        bin_means = aov_result.bin_means
-        bin_stds = aov_result.bin_stds
-        bin_counts = aov_result.bin_counts
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            err_on_mean = bin_stds / np.sqrt(bin_counts)
-        err_on_mean = np.where(np.isnan(err_on_mean), 0.0, err_on_mean)
-
-        line_phases = np.concatenate([bin_centers, bin_centers + 1.0])
-        line_mags = np.concatenate([bin_means, bin_means])
-        line_errs = np.concatenate([err_on_mean, err_on_mean])
-
-        ax.plot(
-            line_phases, line_mags, color=model_color, linestyle='-',
-            linewidth=2.5, zorder=4, label='Binned Mean Profile'
-        )
-        ax.errorbar(
-            line_phases, line_mags, yerr=line_errs, fmt='o', color=node_color,
-            ecolor=node_color, mfc='white' if mode.lower() == "publication" else node_color,
-            markersize=6, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
-            zorder=5, label=r'Bin Means ($\pm \sigma_{\mathrm{mean}}$)'
-        )
-
-    # Reference anchors
-    ax.axhline(aov_result.grand_mean, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
-    ax.axvline(1.0, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
-
-    ax.set_xlim(0.0, 2.0)
-    ax.set_ylabel(y_label)
-
-    if ylim is not None:
-        y_val1, y_val2 = ylim
-        ax.set_ylim(max(y_val1, y_val2), min(y_val1, y_val2))
-    else:
-        ax.invert_yaxis()
-
-    title_str = f"AoV Profile (Bins: {aov_result.n_bins}) | F-Stat: {aov_result.f_statistic:.2f}"
-    if title_suffix:
-        title_str += f" | {title_suffix}"
-
-    if mode.lower() == 'debug':
-        ax.set_title(title_str)
-    else:
-        if standalone:
-            print(title_str)
-
-    if show_legend:
-        ax.legend(loc='best', frameon=frame_display)
-
-    if grid_display:
-        ax.grid(True, linestyle=':', alpha=0.6)
-
-    # Only finalize if running as a standalone script
-    if standalone:
-        plt.tight_layout()
-        if mode.lower() == "publication":
-            plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
-            plt.savefig(f"{filename_base}.png", dpi=300, bbox_inches='tight')
-        plt.show()
+# def plot_aov_step_model_works(
+#         # region fold
+#         phases: np.ndarray,
+#         mag: np.ndarray,
+#         aov_result: AoVResult,
+#         mag_err: Optional[np.ndarray] = None,
+#         model_style: str = "step",
+#         mode: str = "debug",
+#         ylim: Optional[Tuple[float, float]] = None,
+#         y_label: str = 'Magnitude / Flux',
+#         title_suffix: str = "",
+#         filename_base: str = "aov_profile",
+#         show_legend: bool = True,
+#         ax: Optional[plt.Axes] = None,  # <-- Added parameter for grid alignment
+#         # endregion
+# ) -> None:
+#     """
+#     Plots a phase-folded light curve across two full cycles. Supports drawing onto
+#     an externally managed Matplotlib Axes object for multi-panel combined figures.
+#     """
+#     standalone = ax is None
+#
+#     # Setup typography and styles
+#     if mode.lower() == "publication":
+#         plt.rcParams.update(publication_mode_params)
+#         if standalone:
+#             fig, ax = plt.subplots(figsize=(10, 7))
+#         obs_color, obs_alpha = "darkgray", 0.5
+#         model_color, node_color = "crimson", "crimson"
+#         grand_mean_color = "black"
+#         frame_display, grid_display = False, False
+#     else:
+#         if standalone:
+#             fig, ax = plt.subplots(figsize=(14, 8))
+#         obs_color, obs_alpha = "darkgray", 0.5
+#         model_color, node_color = "crimson", "crimson"
+#         grand_mean_color = "black"
+#         frame_display, grid_display = True, True
+#
+#     # Clean observations
+#     mask = np.isfinite(phases) & np.isfinite(mag)
+#     if mag_err is not None:
+#         mask &= np.isfinite(mag_err) & (mag_err > 0)
+#
+#     phases_c, mag_c = phases[mask], mag[mask]
+#     err_c = mag_err[mask] if mag_err is not None else None
+#
+#     plot_phase = np.concatenate([phases_c, phases_c + 1.0])
+#     plot_mag = np.concatenate([mag_c, mag_c])
+#     plot_err = np.concatenate([err_c, err_c]) if err_c is not None else None
+#
+#     # Plot data points on the designated axis
+#     if plot_err is not None:
+#         ax.errorbar(
+#             plot_phase, plot_mag, yerr=plot_err, fmt='o', color=obs_color,
+#             markersize=5, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
+#         )
+#     else:
+#         ax.scatter(
+#             plot_phase, plot_mag, color=obs_color, s=8, alpha=obs_alpha,
+#             label='Observations', zorder=1
+#         )
+#
+#     # Render Models
+#     if model_style.lower() == "step":
+#         edges = aov_result.bin_edges
+#         means = aov_result.bin_means
+#         clean_means = np.where(np.isnan(means), np.nan, means)
+#         step_phases = edges
+#         step_mags = np.append(clean_means, clean_means[-1])
+#         step_phases_plot = np.concatenate([step_phases[:-1], step_phases + 1.0])
+#         step_mags_plot = np.concatenate([clean_means, step_mags])
+#
+#         ax.step(
+#             step_phases_plot, step_mags_plot, where='post', color=model_color,
+#             linewidth=2.5, zorder=5, label='AoV Step Model'
+#         )
+#
+#     elif model_style.lower() == "broken_line":
+#         bin_centers = aov_result.bin_phases
+#         bin_means = aov_result.bin_means
+#         bin_stds = aov_result.bin_stds
+#         bin_counts = aov_result.bin_counts
+#
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             err_on_mean = bin_stds / np.sqrt(bin_counts)
+#         err_on_mean = np.where(np.isnan(err_on_mean), 0.0, err_on_mean)
+#
+#         line_phases = np.concatenate([bin_centers, bin_centers + 1.0])
+#         line_mags = np.concatenate([bin_means, bin_means])
+#         line_errs = np.concatenate([err_on_mean, err_on_mean])
+#
+#         ax.plot(
+#             line_phases, line_mags, color=model_color, linestyle='-',
+#             linewidth=2.5, zorder=4, label='Binned Mean Profile'
+#         )
+#         ax.errorbar(
+#             line_phases, line_mags, yerr=line_errs, fmt='o', color=node_color,
+#             ecolor=node_color, mfc='white' if mode.lower() == "publication" else node_color,
+#             markersize=6, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
+#             zorder=5, label=r'Bin Means ($\pm \sigma_{\mathrm{mean}}$)'
+#         )
+#
+#     # Reference anchors
+#     ax.axhline(aov_result.grand_mean, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
+#     ax.axvline(1.0, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
+#
+#     ax.set_xlim(0.0, 2.0)
+#     ax.set_ylabel(y_label)
+#
+#     if ylim is not None:
+#         y_val1, y_val2 = ylim
+#         ax.set_ylim(max(y_val1, y_val2), min(y_val1, y_val2))
+#     else:
+#         ax.invert_yaxis()
+#
+#     title_str = f"AoV Profile (Bins: {aov_result.n_bins}) | F-Stat: {aov_result.f_statistic:.2f}"
+#     if title_suffix:
+#         title_str += f" | {title_suffix}"
+#
+#     if mode.lower() == 'debug':
+#         ax.set_title(title_str)
+#     else:
+#         if standalone:
+#             print(title_str)
+#
+#     if show_legend:
+#         ax.legend(loc='best', frameon=frame_display)
+#
+#     if grid_display:
+#         ax.grid(True, linestyle=':', alpha=0.6)
+#
+#     # Only finalize if running as a standalone script
+#     if standalone:
+#         plt.tight_layout()
+#         if mode.lower() == "publication":
+#             plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
+#             plt.savefig(f"{filename_base}.png", dpi=300, bbox_inches='tight')
+#         plt.show()
 
 
 def plot_aov_step_model(
@@ -1741,7 +1967,7 @@ def plot_aov_step_model(
     if plot_err is not None:
         ax.errorbar(
             plot_phase, plot_mag, yerr=plot_err, fmt='o', color=obs_color,
-            markersize=5, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
+            markersize=3, alpha=obs_alpha, elinewidth=0.5, label='Observations', zorder=1
         )
     else:
         ax.scatter(
@@ -1773,6 +1999,7 @@ def plot_aov_step_model(
         with np.errstate(divide='ignore', invalid='ignore'):
             err_on_mean = bin_stds / np.sqrt(bin_counts)
         err_on_mean = np.where(np.isnan(err_on_mean), 0.0, err_on_mean)
+        print(f'\n{err_on_mean=}')
 
         line_phases = np.concatenate([bin_centers, bin_centers + 1.0])
         line_mags = np.concatenate([bin_means, bin_means])
@@ -1785,10 +2012,9 @@ def plot_aov_step_model(
         ax.errorbar(
             line_phases, line_mags, yerr=line_errs, fmt='o', color=node_color,
             ecolor=node_color, mfc='white' if mode.lower() == "publication" else node_color,
-            markersize=6, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
+            markersize=4, capsize=3 if mode.lower() == "debug" else 0, elinewidth=1.8,
             zorder=5, label=r'Bin Means ($\pm \sigma_{\mathrm{mean}}$)'
         )
-
     # Reference anchors
     ax.axhline(aov_result.grand_mean, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
     ax.axvline(1.0, color=grand_mean_color, linestyle='--', linewidth=1, alpha=0.7)
@@ -1818,7 +2044,11 @@ def plot_aov_step_model(
             fontsize=12, va="top", ha="center", bbox=bbox_props
         )
 
-    title_str = f"AoV Profile (Bins: {aov_result.n_bins}) | F-Stat: {aov_result.f_statistic:.2f}"
+    title_str = (
+        f"AoV Profile (Bins: {aov_result.n_bins})\n"
+        f"F-Stat: {aov_result.f_statistic:.2f} | Significance: {aov_result.n_sigma:.1f}$\sigma$"
+    )
+
     if title_suffix:
         title_str += f" | {title_suffix}"
 
@@ -1856,6 +2086,7 @@ def plot_multi_panel_publication(
     plt.rcParams.update(publication_mode_params)
 
     fig, axes = plt.subplots(nrows=n_panels, ncols=1, figsize=(10, 3.2 * n_panels), sharex=True)
+    # fig, axes = plt.subplots(nrows=n_panels, ncols=1, figsize=(10, 5 * n_panels), sharex=True)
 
     if n_panels == 1:
         axes = [axes]
@@ -2150,6 +2381,38 @@ def plot_unfolded_with_extrema(
     plt.show()
 
 
+#  ========================= Additional tools ==============
+
+def calc_period_at_jd(a: float, b: float, c: float, jd_target: float,
+                      period_0: float, epoch_0: float):
+    """
+    Calculates period at specified JD using O-C vs (cycle number E) parabolic approximation:
+
+    O-C = a*E^2 + b*E + c
+    Take the derivative:
+    d(O-C)/dE = 2 * a*E + b
+    P_at_jd = P0 + d(O-C)/dE/(E_at_jd) = P0 + b2 + 2 * a * E_at_jd
+    E_at_jd = (JD - T0) / period_0
+
+    Parameters
+    ----------
+    a : float
+    b : float
+    c : float
+        parabola coefficients: O-C = a*E^2 + b*E + c
+    jd_target
+        JD to calculate period at
+    period_0 : float
+        period_o
+    epoch_0 : float
+        T0
+
+    """
+    E_target = (jd_target - epoch_0) / period_0
+    period_at_jd = period_0 + b + 2.0 * a * E_target
+    return period_at_jd
+
+
 #  ========================= SELF-CONTAINED TESTING SUITE  ===============
 
 def self_aov_test():
@@ -2371,16 +2634,16 @@ def oc_realdata_test():
     coeffs_2, cov_2 = fit_quadratic_oc(cycles=cycles_0[mask_2], oc=oc_0[mask_2], err=jd_err_extrema[mask_2])
 
     # here add all physics from oc_fit.py:
-    a, b, c = coeffs_2
-    a_err, b_err, c_err = np.sqrt(np.diag(cov_2))
+    a2, b2, c2 = coeffs_2  # O-C = a2 * E^2 + b2 * E + c2
+    a2_err, b2_err, c2_err = np.sqrt(np.diag(cov_2))
 
-    report_period_change(a, a_err, P=period_0, p_err=0.0001)
+    report_period_change(a2, a2_err, P=period_0, p_err=0.0001)
 
     coeffs_1, cov_1 = fit_linear_oc(cycles=cycles_0[mask_1], oc=oc_0[mask_1], err=jd_err_extrema[mask_1])
 
-    a2, b2, c2 = coeffs_2
     a1, b1 = coeffs_1
-    # Calc periods for given epochs
+
+
     # plot_oc_diagram(cycles=cycles_0, oc=oc_0,
     #                 jd_err=jd_err_extrema,
     #                 a=a2, b=b2, c=c2, user_period=period_0, user_epoch=epoch_0,
@@ -2388,7 +2651,7 @@ def oc_realdata_test():
 
     plot_piecewise_oc_with_period(cycles_0, oc=oc_0, jd_err=jd_err_extrema,
                                   user_period=period_0, user_epoch=epoch_0,
-                                  para_coeffs=(a2, b2, c2), para_bounds=(-105, None),
+                                  para_coeffs=(a2, b2, c2), para_coeffs_err=(a2_err, b2_err, c2_err), para_bounds=(-105, None),
                                   line_coeffs=(a1, b1), line_bounds=(None, -105),
                                   mode="publication")
     return a2, b2, c2
@@ -2413,14 +2676,26 @@ def shift_phase_fold_realdata_test(a: float, b: float, c: float,
     #         (fr"$P = {0.06815:.5f}\ \mathrm{{d}}$", fr"$A = {0.12:.2f}\ \mathrm{{mag}}$"),
     #         (fr"$P = {0.06815:.5f}\ \mathrm{{d}}$", fr"$A = {0.12:.2f}\ \mathrm{{mag}}$")]
     info = [
-        (fr"$JD = 972.6..976.9$", fr"$P = {0.05111:.5f}..{0.05222:.5f}\ \mathrm{{d}}$"),
-        (fr"$JD = 977.6..980.9$", fr"$P = {0.05333:.5f}..{0.05444:.5f}\ \mathrm{{d}}$"),
-        (fr"$JD = 981.4..987.9$", fr"$P = {0.05555:.5f}..{0.05666:.5f}\ \mathrm{{d}}$"),
+        (fr"$JD = 972.6..976.9$", fr"$P = {0.05470:.5f}..{0.05493:.5f}\ \mathrm{{d}}$"),
+        (fr"$JD = 977.6..980.9$", fr"$P = {0.05497:.5f}..{0.05515:.5f}\ \mathrm{{d}}$"),
+        (fr"$JD = 981.4..987.9$", fr"$P = {0.05518:.5f}..{0.05553:.5f}\ \mathrm{{d}}$"),
     ]
-    jd_intervals = [(972.6, 976.9),     # 0.05471 0.05493
-                    (977.6, 980.9),     # 0.05497 0.05515
-                    (981.4, 987.9)]     # 0.05518
-    # for jd_min, jd_max in [(972.6, 976.9), (977.6, 980.9), (981.4, 987.9)]:
+    jd_intervals = [(972.6, 976.9),  # 0.05470 0.05493
+                    (977.6, 980.9),  # 0.05497 0.05515
+                    (981.4, 987.9)]  # 0.05518 0.05553
+
+    info = []
+    for jd_pair in jd_intervals:
+        period_pair = []
+        for jd in jd_pair:
+            period_jd = calc_period_at_jd(a=a, b=b, c=c,
+                                          jd_target=jd, period_0=period, epoch_0=epoch)
+            period_pair.append(period_jd)
+            # print(f"{jd=} {period_jd=:.5f}")
+        info.append((fr"$JD = 2460{jd_pair[0]}..{jd_pair[1]}$",
+                     fr"$P = {period_pair[0]:.5f}..{period_pair[1]:.5f}\ \mathrm{{d}}$"))
+
+    # The main job is here
     for (jd_min, jd_max), (info_left, info_right) in zip(jd_intervals, info):
         jd, mag, mag_err = cutout_data(jd=jd_full, mag=mag_full, mag_err=mag_err_full,
                                        jd_min=jd_min, jd_max=jd_max)
@@ -2433,7 +2708,8 @@ def shift_phase_fold_realdata_test(a: float, b: float, c: float,
             a=a, b=b, c=c,
         )
         # plot_debugging_folded_view(phases=smart_phases, mag=clean_mags, err=clean_errs, title=f'jd:{jd_min}-{jd_max}')
-        result = aov_test(smart_phases, clean_mags, mag_err=None, n_bins=10)
+        result = aov_test(smart_phases, clean_mags, mag_err=clean_errs, n_bins=10)
+        # result = aov_test(smart_phases, clean_mags, mag_err=None, n_bins=10)
         lightcurves_list.append({
             "phases": smart_phases,
             "mag": clean_mags,
@@ -2447,19 +2723,18 @@ def shift_phase_fold_realdata_test(a: float, b: float, c: float,
             # "info_left": fr"$P = {0.06815:.5f}\ \mathrm{{d}}$",
             # "info_right": fr"$A = {0.12:.2f}\ \mathrm{{mag}}$"
         })
-        # plot_aov_step_model(phases=smart_phases, mag=clean_mags,
-        #                     aov_result=result,
-        #                     mag_err=clean_errs,
-        #                     # model_style='broken_line',
-        #                     # model_style='step',
-        #                     model_style=model_style,
-        #                     # mode='publication',
-        #                     # mode='debug',
-        #                     mode=mode,
-        #                     ylim=(0.17, -0.17),
-        #                     y_label=y_label,
-        #                     title_suffix=f'jd:{jd_min}-{jd_max}',
-        #                     show_legend=show_legend)
+        plot_aov_step_model(phases=smart_phases, mag=clean_mags,
+                            aov_result=result,
+                            mag_err=clean_errs,
+                            # model_style='broken_line',
+                            # model_style='step',
+                            model_style=model_style,
+                            # mode='publication',
+                            # mode='debug',
+                            mode=mode,
+                            ylim=(0.17, -0.17),
+                            y_label=y_label,
+                            title_suffix=f'jd:{jd_min}-{jd_max}')
         # show_legend = False
 
     plot_multi_panel_publication(lightcurves_list=lightcurves_list, filename_out="combined_lightcurves")
@@ -2508,7 +2783,8 @@ if __name__ == "__main__":
     # self_aov_test()
     a_, b_, c_ = oc_realdata_test()
     print(a_, b_, c_)
-    # shift_phase_fold_realdata_test(1.4863704378859311e-06, 2.1802734995277483e-05, 0.0005300522755341337,
+    a_, b_, c_ = 1.4863704378859311e-06, 2.1802734995277483e-05, 0.0005300522755341337
+    # shift_phase_fold_realdata_test(a=a_, b=b_, c=c_,
     #                                y_label=r"$\Delta$ mag", mode='publication', model_style='broken_line')
 
     # aov_realdata_test_1()
