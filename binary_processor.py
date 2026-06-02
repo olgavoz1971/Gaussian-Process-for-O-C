@@ -333,8 +333,8 @@ def report_period_change(a: float, a_err: float, P: float, p_err: float) \
     spy = rate * sec_per_year_const
     spy_err = rate_err * sec_per_year_const
 
-    pdot_p = rate / P       # 1/days
-    pdot_p_err = (2.0 * a_err) / (P ** 2)   # 1/days
+    pdot_p = rate / P  # 1/days
+    pdot_p_err = (2.0 * a_err) / (P ** 2)  # 1/days
 
     print("\n" + "=" * 40)
     print("PERIOD CHANGE ANALYSIS (Full Error Budget)")
@@ -1250,7 +1250,7 @@ def plot_piecewise_oc_with_period(
     period_plot_elements_parabolic = []
     if para_coeffs is not None:
         a, b, c = para_coeffs
-        print(f'\n\n\n\n {a=}')
+        # print(f'\n\n\n\n {a=}')
         p_start = para_bounds[0] if (para_bounds and para_bounds[0] is not None) else c_min
         p_end = para_bounds[1] if (para_bounds and para_bounds[1] is not None) else c_max
 
@@ -1356,9 +1356,11 @@ def plot_piecewise_oc_with_period(
         # dp_p = (2.0 * a) / user_period
         dp_dt, dp_dt_err = report_period_change(a, a_err, P=user_period, p_err=0.0001)
 
-        rate_label = fr"$dP/dt$: ${dp_dt:.2e} \pm {dp_dt_err:.2e}$"
         # rate_label = fr'$\\dot{{P}}/P = {pdot_p:.2e} \pm {pdot_p_err:.2e}$'
         # rate_label = fr"$\dot{{P}} = {dp_dt:.2e} \pm {dp_dt_err:.2e}$"
+        # rate_label = fr"$dP/dt$: ${dp_dt:.2e} \pm {dp_dt_err:.2e}$"
+        compact_rate = format_scientific_uncertainty(dp_dt, dp_dt_err)
+        rate_label = fr"Rate ($dP/dt$): ${compact_rate}$"
 
     else:
         rate_label = ''
@@ -2069,8 +2071,9 @@ def plot_aov_step_model(
 
     if standalone:
         plt.tight_layout()
-        if mode.lower() == "publication":
-            plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
+        # if mode.lower() == "publication":
+        plt.savefig(f"{filename_base}.pdf", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{filename_base}.png", bbox_inches='tight', dpi=300)
         plt.show()
 
 
@@ -2413,6 +2416,54 @@ def calc_period_at_jd(a: float, b: float, c: float, jd_target: float,
     return period_at_jd
 
 
+# def format_scientific_uncertainty_back(value: float, error: float) -> str:
+#     """
+#     Formats a value and its error into compact scientific notation.
+#     Example: 5.4051e-05, 2.0759e-06  ->  "5.41(21)e-05"
+#     """
+#     if error <= 0 or value == 0:
+#         return f"{value:.2e}"
+#
+#     # Find the base-10 exponent of the main value
+#     exponent = int(np.floor(np.log10(np.abs(value))))
+#
+#     # Scale both numbers so the main value is between 1 and 10
+#     scaled_value = value / (10 ** exponent)
+#     scaled_error = error / (10 ** exponent)
+#
+#     # We want 2 decimal places for the value (e.g., 5.41)
+#     # This means the error must be multiplied by 100 to represent those two places
+#     error_digits = int(round(scaled_error * 100))
+#
+#     # Construct the compact string
+#     return f"{scaled_value:.2f}({error_digits})e{exponent:+03d}"
+
+
+def format_scientific_uncertainty(value: float, error: float) -> str:
+    """
+    Formats a value and its error into compact scientific notation
+    pre-formatted safely for LaTeX strings.
+    Example: 5.4051e-05, 2.0759e-06 -> r"5.41(21)\times10^{-5}"
+    """
+    if error <= 0 or value == 0:
+        return f"{value:.2e}"
+
+    # Find the base-10 exponent of the main value
+    exponent = int(np.floor(np.log10(np.abs(value))))
+
+    # Scale both numbers to match the exponent frame
+    scaled_value = value / (10 ** exponent)
+    scaled_error = error / (10 ** exponent)
+
+    # Get the error digits matching the two decimal places of the value
+    error_digits = int(round(scaled_error * 100))
+
+    # We build the LaTeX structure directly using raw text rules to avoid f-string bugs
+    # This outputs standard journal format: 5.41(21) \times 10^{-5}
+    latex_string = r"{:.2f}({:d}) \times 10^{{{:d}}}".format(scaled_value, error_digits, exponent)
+    return latex_string
+
+
 #  ========================= SELF-CONTAINED TESTING SUITE  ===============
 
 def self_aov_test():
@@ -2585,7 +2636,7 @@ def run_synthetic_verification():
 def aov_realdata_test_1():
     filename_tess = '/home/voz/projects/UPJS/Shugarov/J0541/TESS/TESS_composite_tarasenkov.dat'
     T0_tess = 2458468.2856413433
-    period = 0.06606354
+    period = 0.06606352
     jd_full, mag_full, mag_err_full = load_lightcurve_astropy(filename_tess, jd_col=0, mag_col='flux',
                                                               err_col=None, file_format='commented_header')
 
@@ -2594,8 +2645,16 @@ def aov_realdata_test_1():
     jd, mag, mag_err = cutout_data(jd=jd_full, mag=mag_full, mag_err=mag_err_full, jd_min=jd_min, jd_max=jd_max)
     phases = fold_lightcurve(jd=jd, period=period, epoch=T0_tess)
     result = aov_test(phases, mag, mag_err=mag_err, n_bins=10)
-    plot_aov_step_model(phases, mag, aov_result=result, mag_err=mag_err, model_style='broken_line')
+    filename_base = f'aov_TESS_P_{period}'
+    filename_base.replace('.', '_')
+    plot_aov_step_model(phases, mag, aov_result=result,
+                        mag_err=mag_err,
+                        model_style='broken_line',
+                        filename_base=filename_base,
+                        mode='debug')
 
+
+# lll
 
 def aov_realdata_test_2():
     filename = 'data/TCP_J05415572-2308340/all_norm.dat'
@@ -2643,7 +2702,6 @@ def oc_realdata_test():
 
     a1, b1 = coeffs_1
 
-
     # plot_oc_diagram(cycles=cycles_0, oc=oc_0,
     #                 jd_err=jd_err_extrema,
     #                 a=a2, b=b2, c=c2, user_period=period_0, user_epoch=epoch_0,
@@ -2651,7 +2709,8 @@ def oc_realdata_test():
 
     plot_piecewise_oc_with_period(cycles_0, oc=oc_0, jd_err=jd_err_extrema,
                                   user_period=period_0, user_epoch=epoch_0,
-                                  para_coeffs=(a2, b2, c2), para_coeffs_err=(a2_err, b2_err, c2_err), para_bounds=(-105, None),
+                                  para_coeffs=(a2, b2, c2), para_coeffs_err=(a2_err, b2_err, c2_err),
+                                  para_bounds=(-105, None),
                                   line_coeffs=(a1, b1), line_bounds=(None, -105),
                                   mode="publication")
     return a2, b2, c2
@@ -2779,14 +2838,13 @@ def period_correction_realdata_test():
 
 
 if __name__ == "__main__":
+    # aov_realdata_test_1()
+    # aov_realdata_test_2()
+    # run_synthetic_verification()
     # period_correction_realdata_test()
     # self_aov_test()
     a_, b_, c_ = oc_realdata_test()
     print(a_, b_, c_)
-    a_, b_, c_ = 1.4863704378859311e-06, 2.1802734995277483e-05, 0.0005300522755341337
+    # a_, b_, c_ = 1.4863704378859311e-06, 2.1802734995277483e-05, 0.0005300522755341337
     # shift_phase_fold_realdata_test(a=a_, b=b_, c=c_,
     #                                y_label=r"$\Delta$ mag", mode='publication', model_style='broken_line')
-
-    # aov_realdata_test_1()
-    # aov_realdata_test_2()
-    # run_synthetic_verification()
